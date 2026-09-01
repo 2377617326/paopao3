@@ -5,6 +5,8 @@ import urllib.parse
 import re
 import requests
 import time
+import json
+import os
 
 if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -20,8 +22,6 @@ FORECAST = {
     "watch": {"east": 46400, "central": 28000, "west": 28000},
     "game": {"east": 42400, "central": 24000, "west": 25600},
 }
-
-Q1_FINAL_FORCAST = {"tv": 12800, "watch": 46400, "game": 42400}
 
 Q2_SCENARIOS = {
     1: {"tv": (0.70, 0.85), "watch": (1.10, 1.50), "game": (1.05, 1.15)},
@@ -52,6 +52,20 @@ Q4_TIME_ALLOC = [
     ([0, 0, 0], [60, 60, 60], [40, 40, 40]),
     ([10, 10, 10], [50, 50, 50], [40, 40, 40]),
 ]
+
+STATE_FILE = "paopao3_state.json"
+
+
+def load_state():
+    if os.path.exists(STATE_FILE):
+        with open(STATE_FILE, "r") as f:
+            return json.load(f)
+    return {}
+
+
+def save_state(state):
+    with open(STATE_FILE, "w") as f:
+        json.dump(state, f)
 
 
 def login_9997(username, password):
@@ -142,28 +156,19 @@ def flip_room(s, room_id, uid, timeout=15):
     return r.text
 
 
-def run_quarter(s, user, ck, period_num, quarter, n=8):
-    print(f"\n{'='*50}")
-    print(f"Q{quarter} period={period_num}")
-    print(f"{'='*50}")
-
-    results = {}
+def run_decisions(s, user, ck, period_num, quarter, n=8):
+    print(f"\nQ{quarter} decisions...")
 
     # type4
-    print(f"\n[Q{quarter}] type4")
     r = submit_decision(s, user, ck, period_num, 4,
                         "9,9,9,1,9,9,9,1,9,9,9,1,")
-    ok = r.get("Status") == 2000
-    print(f"  {'OK' if ok else 'FAIL'}")
-    results["type4"] = ok
+    print(f"  type4: {'OK' if r.get('Status') == 2000 else 'FAIL'}")
 
     # type5
-    print(f"\n[Q{quarter}] type5")
     salary = random.randint(3900, 4150)
     commission = round(random.uniform(2.4, 3.15), 2)
-    if quarter <= 1:
-        type5_str = ("99,99,99,9,9,9,0,0,0,0,0,0,"
-                     "0,0,0,0,0,0,3800,1.5,9,9,9,")
+    if quarter == 1:
+        type5_str = "99,99,99,9,9,9,0,0,0,0,0,0,0,0,0,0,0,0,3800,1.5,9,9,9,"
     elif quarter == 4:
         alloc_idx = random.choices([0, 1, 2], weights=[5, 80, 15])[0]
         tv_a, wa, ga = Q4_TIME_ALLOC[alloc_idx]
@@ -177,12 +182,9 @@ def run_quarter(s, user, ck, period_num, quarter, n=8):
                      f"0,0,0,0,0,0,0,0,0,0,0,0,"
                      f"{salary},{commission},9,9,9,")
     r = submit_decision(s, user, ck, period_num, 5, type5_str)
-    ok = r.get("Status") == 2000
-    print(f"  {'OK' if ok else 'FAIL'}")
-    results["type5"] = ok
+    print(f"  type5: {'OK' if r.get('Status') == 2000 else 'FAIL'}")
 
     # type3
-    print(f"\n[Q{quarter}] type3")
     tv_total = watch_total = game_total = 0
     if quarter == 1:
         tv_east = 1500
@@ -207,7 +209,6 @@ def run_quarter(s, user, ck, period_num, quarter, n=8):
                 lo, hi = sc[scenario][prod]
                 pcts[prod] = random.uniform(lo, hi)
         else:
-            scenario = 0
             pcts = {}
             for prod in ["tv", "watch", "game"]:
                 lo, hi = Q4_RANGES[prod]
@@ -226,26 +227,17 @@ def run_quarter(s, user, ck, period_num, quarter, n=8):
         game_total = ga_e + ga_c + ga_w
         type3_str = (f"{tv_e},{tv_c},{tv_w},{wa_e},{wa_c},{wa_w},"
                      f"{ga_e},{ga_c},{ga_w},")
-        print(f"  scenario={scenario}")
     r = submit_decision(s, user, ck, period_num, 3, type3_str)
-    ok = r.get("Status") == 2000
-    print(f"  TV={tv_total} Watch={watch_total} Game={game_total}")
-    print(f"  {'OK' if ok else 'FAIL'}")
-    results["type3"] = ok
+    print(f"  type3: {'OK' if r.get('Status') == 2000 else 'FAIL'}")
 
     # type1
-    print(f"\n[Q{quarter}] type1")
     t1 = tv_total + 480
     w1 = watch_total + 480
     g1 = game_total + 480
     r = submit_decision(s, user, ck, period_num, 1, f"{t1},{w1},{g1},")
-    ok = r.get("Status") == 2000
-    print(f"  TV={t1} Watch={w1} Game={g1}")
-    print(f"  {'OK' if ok else 'FAIL'}")
-    results["type1"] = ok
+    print(f"  type1: {'OK' if r.get('Status') == 2000 else 'FAIL'}")
 
     # type6
-    print(f"\n[Q{quarter}] type6")
     if quarter == 1:
         tp = twp = tgp = 0
         type6_str = ("0,0,0,0,0,0,0,0,0,"
@@ -270,22 +262,30 @@ def run_quarter(s, user, ck, period_num, quarter, n=8):
                      f"{tgp},{tgp},{tgp},10,11,12,13,13,15,12,14,5,5,2,2,")
     r6 = submit_decision(s, user, ck, period_num, 6, type6_str)
     remaining = r6.get("Data", {}).get("state", 0)
-    ok = r6.get("Status") == 2000
-    print(f"  TV={tp/10000:.0f}w Watch={twp/10000:.0f}w Game={tgp/10000:.0f}w")
-    print(f"  remaining={remaining:,.2f}")
-    print(f"  {'OK' if ok else 'FAIL'}")
-    results["type6"] = ok
+    print(f"  type6: {'OK' if r6.get('Status') == 2000 else 'FAIL'}"
+          f" (remaining={remaining:,.0f})")
 
     # type2
-    print(f"\n[Q{quarter}] type2")
     if quarter == 1:
-        rd1 = random.randint(80, 150) * 10000
-        rd2 = random.randint(80, 150) * 10000
         prods = random.sample(["tv", "watch", "game"], 2)
-        rd_str_map = {prods[0]: rd1, prods[1]: rd2}
-        rdt = rd_str_map.get("tv", 0)
-        rdw = rd_str_map.get("watch", 0)
-        rdg = rd_str_map.get("game", 0)
+        rd_vals = {"tv": random.randint(80, 150) * 10000,
+                   "watch": random.randint(80, 150) * 10000,
+                   "game": random.randint(80, 150) * 10000}
+        rdt = rd_vals[prods[0]] if "tv" in prods else 0
+        rdw = rd_vals[prods[1]] if "watch" in prods else 0
+        rdg = rd_vals[prods[1]] if "game" in prods else 0
+        if "tv" in prods and "watch" in prods:
+            rdt = rd_vals["tv"]
+            rdw = rd_vals["watch"]
+            rdg = 0
+        elif "tv" in prods and "game" in prods:
+            rdt = rd_vals["tv"]
+            rdw = 0
+            rdg = rd_vals["game"]
+        else:
+            rdt = 0
+            rdw = rd_vals["watch"]
+            rdg = rd_vals["game"]
     elif quarter == 2:
         rdt = random.randint(800, 1800) * 10000
         rdw = random.randint(1200, 3200) * 10000
@@ -300,69 +300,86 @@ def run_quarter(s, user, ck, period_num, quarter, n=8):
         rdg = random.randint(3500, 6000) * 10000
     type2_str = f"{rdt},{rdw},{rdg},100,100,100,"
     r = submit_decision(s, user, ck, period_num, 2, type2_str)
-    ok = r.get("Status") == 2000
-    print(f"  TV={rdt/10000:.0f}w Watch={rdw/10000:.0f}w Game={rdg/10000:.0f}w")
-    print(f"  {'OK' if ok else 'FAIL'}")
-    results["type2"] = ok
+    print(f"  type2: {'OK' if r.get('Status') == 2000 else 'FAIL'}")
 
     # type7
-    print(f"\n[Q{quarter}] type7")
     r = submit_decision(s, user, ck, period_num, 7,
                         "9999,7999,9999,9999,7999,9999,9999,7999,9999,")
-    ok = r.get("Status") == 2000
-    print(f"  {'OK' if ok else 'FAIL'}")
-    results["type7"] = ok
+    print(f"  type7: {'OK' if r.get('Status') == 2000 else 'FAIL'}")
 
     # type8
-    print(f"\n[Q{quarter}] type8")
     r = submit_decision(s, user, ck, period_num, 8,
                         "1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,", state=2)
-    ok = r.get("Status") == 2000
-    print(f"  {'OK' if ok else 'FAIL'}")
-    results["type8"] = ok
-
-    return results
+    print(f"  type8: {'OK' if r.get('Status') == 2000 else 'FAIL'}")
 
 
 def main():
     uid = "9258"
-    room_id = sys.argv[1] if len(sys.argv) > 1 else "6597"
     n = 8
 
-    print("=" * 50)
-    print(f"paopao3 full flow Q1-Q4 room={room_id}")
-    print("=" * 50)
+    state = load_state()
+    room_id = state.get("room_id")
 
-    for quarter in range(1, 5):
-        s, user = login_9001(uid, room_id)
-        if s is None:
-            print(f"Q{quarter} login failed")
+    if not room_id:
+        room_id = find_active_room(uid)
+        if not room_id:
+            print("No active room, creating not supported yet")
             return
-        ck = {
-            "userName": urllib.parse.quote(
-                str(user.get("userName")), safe=""),
-            "className": urllib.parse.quote(
-                str(user.get("className")), safe=""),
-        }
-        period_num = int(user.get("periodNum"))
-        print(f"\ncurrent period={period_num}")
+        state["room_id"] = room_id
+        save_state(state)
 
-        if period_num != quarter:
-            print(f"expected Q{quarter} but got period {period_num}, skipping")
-            continue
+    print(f"Room: {room_id}")
 
-        run_quarter(s, user, ck, period_num, quarter, n)
+    s, user = login_9001(uid, room_id)
+    if s is None:
+        print("Login failed")
+        return
 
-        if quarter < 4:
-            print(f"\nflipping to Q{quarter+1}...")
-            time.sleep(2)
-            result = flip_room(s, room_id, uid)
-            print(f"  flip result: {result}")
-            time.sleep(5)
+    period = int(user.get("periodNum"))
+    print(f"Period: {period}")
 
-    print("\n" + "=" * 50)
-    print("ALL DONE!")
-    print("=" * 50)
+    if period > 4:
+        print("Game over, resetting state")
+        save_state({})
+        return
+
+    ck = {
+        "userName": urllib.parse.quote(str(user.get("userName")), safe=""),
+        "className": urllib.parse.quote(str(user.get("className")), safe=""),
+    }
+
+    key = f"q{period}_submitted"
+    if not state.get(key):
+        run_decisions(s, user, ck, period, period, n)
+        state[key] = True
+        state[f"q{period}_flip_time"] = time.time()
+        save_state(state)
+        print(f"\nQ{period} done. Will flip after 20 min.")
+        return
+
+    flip_time = state.get(f"q{period}_flip_time", 0)
+    elapsed = time.time() - flip_time
+    wait = 1200 - elapsed
+
+    if wait > 0:
+        print(f"Wait {wait:.0f}s for period to elapse...")
+        if wait > 60:
+            print("Too long to sleep, exit and retry later")
+            return
+        time.sleep(wait + 10)
+
+    print(f"\nFlipping Q{period}...")
+    result = flip_room(s, room_id, uid)
+    print(f"  Result: {result}")
+
+    if result == "1" or "未到结算时间" not in result:
+        del state[key]
+        if f"q{period}_flip_time" in state:
+            del state[f"q{period}_flip_time"]
+        save_state(state)
+        print("Flip OK!")
+    else:
+        print("Not time yet, will retry next run")
 
 
 if __name__ == "__main__":
