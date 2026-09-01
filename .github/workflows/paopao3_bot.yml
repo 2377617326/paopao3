@@ -2,7 +2,7 @@ name: Paopao3 Scheduler
 
 on:
   schedule:
-    - cron: '0 */2 * * *'
+    - cron: '*/5 * * * *'
   workflow_dispatch:
 
 concurrency:
@@ -13,7 +13,7 @@ jobs:
   run-bot:
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
       actions: write
     steps:
       - uses: actions/checkout@v4
@@ -26,11 +26,15 @@ jobs:
         run: pip install requests
 
       - name: Run scheduler
-        env:
-          BOT_USER: "9258"
-          BOT_PASS: "321"
-        run: |
-          python paopao3_scheduler.py
+        run: python paopao3_scheduler.py
+
+      - name: Save state
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: paopao3-state
+          path: paopao3_state.json
+          retention-days: 1
 
       - name: Auto restart
         if: always()
@@ -39,14 +43,22 @@ jobs:
         run: |
           HOUR_BJ=$(( ($(date -u +%H) + 8) % 24 ))
           if [ $HOUR_BJ -ge 7 ] && [ $HOUR_BJ -lt 22 ]; then
-            echo "BJ time ${HOUR_BJ}:00, working hours, restarting..."
+            echo "BJ ${HOUR_BJ}:00, working, restart in 30s..."
             sleep 30
             curl -s -X POST \
               -H "Authorization: token $GH_TOKEN" \
               -H "Accept: application/vnd.github.v3+json" \
               "https://api.github.com/repos/${{ github.repository }}/actions/workflows/paopao3_bot.yml/dispatches" \
               -d '{"ref":"main"}'
-            echo "New run triggered"
+            echo "Triggered"
           else
-            echo "BJ time ${HOUR_BJ}:00, off hours, no restart"
+            echo "BJ ${HOUR_BJ}:00, off hours"
           fi
+
+      - name: Restore state
+        if: always()
+        uses: actions/download-artifact@v4
+        with:
+          name: paopao3-state
+          path: .
+        continue-on-error: true
