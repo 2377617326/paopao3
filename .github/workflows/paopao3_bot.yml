@@ -14,7 +14,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-      actions: write
     steps:
       - uses: actions/checkout@v4
 
@@ -42,22 +41,3 @@ jobs:
           name: paopao3-state
           path: paopao3_state.json
           retention-days: 1
-
-      - name: Auto restart
-        if: always()
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          HOUR_BJ=$(( ($(date -u +%H) + 8) % 24 ))
-          if [ $HOUR_BJ -ge 7 ] && [ $HOUR_BJ -lt 22 ]; then
-            echo "BJ ${HOUR_BJ}:00, working, restart in 30s..."
-            sleep 30
-            curl -s -X POST \
-              -H "Authorization: token $GH_TOKEN" \
-              -H "Accept: application/vnd.github.v3+json" \
-              "https://api.github.com/repos/${{ github.repository }}/actions/workflows/paopao3_bot.yml/dispatches" \
-              -d '{"ref":"main"}'
-            echo "Triggered"
-          else
-            echo "BJ ${HOUR_BJ}:00, off hours"
-          fi
