@@ -139,18 +139,29 @@ class Scheduler:
         rooms = {}
         for block in re.split(r'<div class="col-11 px-2 mb-3 room-list-item">', html):
             owner = re.search(r"房主名字[：:]\s*([^<\s]+)", block)
-            if owner and ("自动" in owner.group(1)):
-                m = re.search(r"gotoJoinRoom\('\d+','(\d+)','(\d+)'\)", block)
-                if m:
-                    level = int(m.group(1))
-                    rid = m.group(2)
-                    if "已结束" not in block:
-                        rooms[level] = rid
+            if not owner:
+                continue
+            m = re.search(r"gotoJoinRoom\('\d+','(\d+)','(\d+)'\)", block)
+            if not m:
+                continue
+            level = int(m.group(1))
+            rid = m.group(2)
+            if "已结束" not in block:
+                rooms[level] = rid
         return rooms
+
+    def room_clean(self, room_level):
+        try:
+            self._post_9997("/room/roomClean",
+                            userId=self.user_id, roomLevelId=room_level)
+        except Exception as e:
+            print(f"  [clean] error: {e}")
 
     def create_room(self, room_level=1):
         now = self._now()
         name = f"paopao3 {now.strftime('%H%M')}"
+        self.room_clean(room_level)
+        time.sleep(2)
         params = {
             "userId": self.user_id, "roomLevelId": room_level,
             "roomName": name, "roomPassword": "123",
