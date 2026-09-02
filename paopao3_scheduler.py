@@ -169,12 +169,12 @@ class Scheduler:
         }
         resp = self._post_9997("/room/addRoom", **params)
         print(f"  [create] addRoom: {resp}")
-        if resp == "0":
-            print(f"  [create] failed, resp=0")
-            return None
         time.sleep(3)
         rooms = self.find_own_rooms()
-        return rooms.get(room_level)
+        room_id = rooms.get(room_level)
+        if room_id:
+            print(f"  [create] success! room={room_id}")
+        return room_id
 
     def start_room(self, room_id):
         resp = self._post_9997("/room/startRoomExp",
