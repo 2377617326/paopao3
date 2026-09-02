@@ -141,6 +141,8 @@ class Scheduler:
             owner = re.search(r"房主名字[：:]\s*([^<\s]+)", block)
             if not owner:
                 continue
+            if owner.group(1) != self.username:
+                continue
             m = re.search(r"gotoJoinRoom\('\d+','(\d+)','(\d+)'\)", block)
             if not m:
                 continue
