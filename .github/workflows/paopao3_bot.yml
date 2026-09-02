@@ -32,6 +32,9 @@ jobs:
         continue-on-error: true
 
       - name: Run scheduler
+        env:
+          BOT_USER: "自动-1"
+          BOT_PASS: "321"
         run: python paopao3_scheduler.py
 
       - name: Save state
