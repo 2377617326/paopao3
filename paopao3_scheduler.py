@@ -604,9 +604,91 @@ class DecisionClient:
         return True
 
 
+def flip_loop(sched, dc, room_id, room_level):
+    uid = sched.user_id
+    current_period = dc.get_period(uid, room_id)
+    print(f"  [flip] current period: {current_period}", flush=True)
+
+    if current_period > 4:
+        print("  [flip] game over", flush=True)
+        sched.finish_exp(room_id, room_level)
+        return True
+
+    for attempt in range(3):
+        try:
+            dc.submit_all_decisions(uid, room_id, current_period)
+            break
+        except Exception as e:
+            print(f"  [flip] submit error: {e}", flush=True)
+            time.sleep(30)
+
+    no_flip_count = 0
+    while current_period < TOTAL_PERIOD:
+        if sched._time_left() < 600:
+            print("  [flip] time limit, exit", flush=True)
+            return False
+        if sched.is_room_finished(room_id, room_level):
+            print("  [flip] room finished", flush=True)
+            return True
+        resp = sched.next_period(room_id, room_level)
+        if resp == "1":
+            current_period += 1
+            no_flip_count = 0
+            print(f"  [flip] flipped! period {current_period}", flush=True)
+            for attempt in range(3):
+                try:
+                    dc.submit_all_decisions(uid, room_id, current_period)
+                    break
+                except Exception as e:
+                    print(f"  [flip] submit error: {e}", flush=True)
+                    time.sleep(30)
+            if sched.is_room_finished(room_id, room_level):
+                print("  [flip] room finished after flip", flush=True)
+                return True
+        else:
+            no_flip_count += 1
+            print(f"  [flip] resp={resp}, retry 30s...", flush=True)
+            time.sleep(30)
+            if no_flip_count >= 20:
+                print("  [flip] too many retries, finish", flush=True)
+                sched.finish_exp(room_id, room_level)
+                return True
+
+    print("  [finish] end room...", flush=True)
+    for _ in range(20):
+        if sched._time_left() < 600:
+            return False
+        resp = sched.finish_exp(room_id, room_level)
+        if resp == "1" or sched.is_room_finished(room_id, room_level):
+            print("  [finish] done!", flush=True)
+            return True
+        time.sleep(30)
+    return True
+
+
+def handle_room(sched, dc, room_id, room_level):
+    level = LEVELS[room_level]
+    players, maxp = sched.room_status(room_id, room_level)
+    print(f"  [handle] room {room_id} level {room_level}({level['name']}) {players}/{maxp}", flush=True)
+    if players is None:
+        print("  [handle] room not accessible", flush=True)
+        return True
+
+    if sched.is_room_started(room_id, room_level):
+        print("  [handle] room already started, flip loop", flush=True)
+    else:
+        created_at = sched._now()
+        started = sched.wait_and_start(room_id, room_level, created_at)
+        if not started:
+            return False
+
+    flip_loop(sched, dc, room_id, room_level)
+    return True
+
+
 def main():
-    username = os.environ.get("BOT_USER", "星星在南")
-    password = os.environ.get("BOT_PASS", "123456@a")
+    username = os.environ.get("BOT_USER", "自动-1")
+    password = os.environ.get("BOT_PASS", "321")
 
     print(f"{'='*50}")
     print(f"paopao3 scheduler {now_bj().strftime('%Y-%m-%d %H:%M:%S')}")
@@ -623,7 +705,7 @@ def main():
 
     while True:
         if sched._time_left() < 600:
-            print("===接近时限, exit===", flush=True)
+            print("=== time limit, exit ===", flush=True)
             return
 
         now = sched._now()
@@ -631,16 +713,15 @@ def main():
 
         plan = sched.plan_level()
         if plan is None:
-            print(f"[{now.strftime('%H:%M')}] after {START_LIMIT_HOUR}h, check rooms...", flush=True)
+            print(f"[{now.strftime('%H:%M')}] after {START_LIMIT_HOUR}h", flush=True)
             own = sched.find_own_rooms()
             if own:
                 for lv, rid in own.items():
                     if not sched.is_room_finished(rid, lv):
-                        print(f"[handle] level {lv} room {rid} not finished", flush=True)
-                        sched.wait_and_start(rid, lv, now)
+                        handle_room(sched, dc, rid, lv)
                         break
                 else:
-                    print("all finished, done", flush=True)
+                    print("all finished", flush=True)
                     return
                 continue
             else:
@@ -653,117 +734,35 @@ def main():
         own = sched.find_own_rooms()
         print(f"  found {len(own)} rooms", flush=True)
         if own:
-            has_active = False
             for lv, rid in own.items():
                 if not sched.is_room_finished(rid, lv):
-                    print(f"[handle] level {lv} room {rid} not finished", flush=True)
-                    sched.wait_and_start(rid, lv, now)
-                    has_active = True
+                    handle_room(sched, dc, rid, lv)
                     break
-            if has_active:
+            else:
+                print("  all rooms finished, create new", flush=True)
+                own = {}
+            if own:
                 continue
-            print("  all rooms finished, create new", flush=True)
 
         room_level = primary if primary == secondary else sched.pick_level(primary, secondary)
-        print(f"  selected level: {room_level}({LEVELS[room_level]['name']})", flush=True)
+        print(f"  selected: {room_level}({LEVELS[room_level]['name']})", flush=True)
 
-        while True:
-            if sched._time_left() < 600:
-                print("===接近时限, exit===", flush=True)
-                return
-
-            print(f"  [create] trying level {room_level}...", flush=True)
-            created_at = sched._now()
-            ok, room_id = sched.create_room(room_level, created_at)
-            if ok:
-                print(f"  [create] success! room={room_id}", flush=True)
-                break
-
+        print(f"  [create] creating...", flush=True)
+        created_at = sched._now()
+        ok, room_id = sched.create_room(room_level, created_at)
+        if not ok:
             own = sched.find_own_rooms()
             if own:
                 for lv, rid in own.items():
                     if not sched.is_room_finished(rid, lv):
-                        print(f"  [create] found existing room {rid}, handle it", flush=True)
-                        room_id = rid
-                        room_level = lv
-                        ok = True
+                        handle_room(sched, dc, rid, lv)
                         break
-                if ok:
-                    break
-
-            print("  [create] failed, retry in 30s...", flush=True)
-            time.sleep(30)
-
-        started = sched.wait_and_start(room_id, room_level, created_at)
-        if started:
-            current_period = 1
-            current_period = dc.get_period(sched.user_id, room_id)
-            print(f"  [flip] current period: {current_period}", flush=True)
-
-            if current_period > 4:
-                print("  [flip] game over, end room", flush=True)
-                sched.finish_exp(room_id, room_level)
                 continue
-
-            print(f"  [flip] submit Q{current_period} decisions...", flush=True)
-            for attempt in range(3):
-                try:
-                    if dc.submit_all_decisions(sched.user_id, room_id, current_period):
-                        break
-                except Exception as e:
-                    print(f"  [flip] error: {e}")
-                    time.sleep(30)
-
-            no_flip_count = 0
-            while current_period < TOTAL_PERIOD:
-                if sched._time_left() < 600:
-                    print("  [flip]接近时限, exit", flush=True)
-                    return
-                if sched.is_room_finished(room_id, room_level):
-                    print("  [flip] room finished", flush=True)
-                    break
-                resp = sched.next_period(room_id, room_level)
-                if resp == "1":
-                    current_period += 1
-                    no_flip_count = 0
-                    print(f"  [flip] flipped! now period {current_period}", flush=True)
-                    print(f"  [flip] submit Q{current_period} decisions...", flush=True)
-                    for attempt in range(3):
-                        try:
-                            if dc.submit_all_decisions(sched.user_id, room_id, current_period):
-                                break
-                        except Exception as e:
-                            print(f"  [flip] error: {e}")
-                            time.sleep(30)
-                    if sched.is_room_finished(room_id, room_level):
-                        print("  [flip] room finished after flip", flush=True)
-                        break
-                else:
-                    no_flip_count += 1
-                    print(f"  [flip] resp={resp}, retry in 30s...", flush=True)
-                    time.sleep(30)
-                    if no_flip_count >= 20:
-                        print("  [flip] too many retries, finish room", flush=True)
-                        resp2 = sched.finish_exp(room_id, room_level)
-                        if resp2 == "1" or sched.is_room_finished(room_id, room_level):
-                            print("  [flip] room finished!", flush=True)
-                            break
-                        no_flip_count = 0
-
-            print("  [finish] end room...", flush=True)
-            while True:
-                if sched._time_left() < 600:
-                    print("  [finish]接近时限, exit", flush=True)
-                    return
-                resp = sched.finish_exp(room_id, room_level)
-                if resp == "1":
-                    print("  [finish] done!", flush=True)
-                    break
-                if sched.is_room_finished(room_id, room_level):
-                    print("  [finish] room finished!", flush=True)
-                    break
-                print(f"  [finish] resp={resp}, retry in 30s...", flush=True)
-                time.sleep(30)
+            print("  [create] failed, wait 30s", flush=True)
+            time.sleep(30)
+            continue
+        print(f"  [create] success! room={room_id}", flush=True)
+        handle_room(sched, dc, room_id, room_level)
 
 
 if __name__ == "__main__":
