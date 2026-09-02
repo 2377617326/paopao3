@@ -667,22 +667,32 @@ def main():
         room_level = primary if primary == secondary else sched.pick_level(primary, secondary)
         print(f"  selected level: {room_level}({LEVELS[room_level]['name']})", flush=True)
 
-        print(f"  [create] creating level {room_level}...", flush=True)
-        created_at = sched._now()
-        ok, room_id = sched.create_room(room_level, created_at)
-        if not ok:
+        while True:
+            if sched._time_left() < 600:
+                print("===接近时限, exit===", flush=True)
+                return
+
+            print(f"  [create] trying level {room_level}...", flush=True)
+            created_at = sched._now()
+            ok, room_id = sched.create_room(room_level, created_at)
+            if ok:
+                print(f"  [create] success! room={room_id}", flush=True)
+                break
+
             own = sched.find_own_rooms()
             if own:
-                print(f"  [create] failed but found {len(own)} rooms, handle", flush=True)
                 for lv, rid in own.items():
                     if not sched.is_room_finished(rid, lv):
-                        sched.wait_and_start(rid, lv, now)
+                        print(f"  [create] found existing room {rid}, handle it", flush=True)
+                        room_id = rid
+                        room_level = lv
+                        ok = True
                         break
-                continue
-            print("  [create] failed, wait 2min", flush=True)
-            time.sleep(120)
-            continue
-        print(f"  [create] success! room={room_id}", flush=True)
+                if ok:
+                    break
+
+            print("  [create] failed, retry in 30s...", flush=True)
+            time.sleep(30)
 
         started = sched.wait_and_start(room_id, room_level, created_at)
         if started:
