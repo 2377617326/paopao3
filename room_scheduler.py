@@ -1,4 +1,7 @@
 # -*- coding: utf-8 -*-
+"""
+paopao3 scheduler - 建房翻期抄paopao1, 决策按用户指定Q1-Q4逻辑
+"""
 import random
 import sys
 import urllib.parse
@@ -8,6 +11,12 @@ import time
 import json
 import os
 import datetime as dt
+import signal
+
+def _sigterm_exit(sig, frame):
+    sys.exit(0)
+
+signal.signal(signal.SIGTERM, _sigterm_exit)
 
 if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -55,6 +64,20 @@ Q4_TIME_ALLOC = [
     ([10, 10, 10], [50, 50, 50], [40, 40, 40]),
 ]
 
+LEVELS = {
+    1: {"name": "牛刀小试", "full_n": 6},
+    2: {"name": "锋芒毕露", "full_n": 14},
+    3: {"name": "群雄争霸", "full_n": 18},
+}
+
+ROOM_NAME_MARK = "尔尔定时比赛q群5342744003"
+ROOM_NAME_TPL = ROOM_NAME_MARK + " 自动测试{time}开"
+TOTAL_PERIOD = 4
+PERIOD_LENGTH = 20
+ROOM_PASSWORD = "123"
+FORCE_START_AFTER = 40
+START_LIMIT_HOUR = 22
+MAX_JOB_RUNTIME = 1.9 * 60 * 60
 STATE_FILE = "paopao3_state.json"
 
 
@@ -80,31 +103,17 @@ class Scheduler:
         self.password = password
         self.user_id = None
         self.session = requests.Session()
-        self.session.headers.update({"User-Agent": "Mozilla/5.0"})
+        self.session.headers.update({"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"})
         self.timeout = timeout
         self.start_ts = time.time()
+
+    def _time_left(self):
+        return MAX_JOB_RUNTIME - (time.time() - self.start_ts)
 
     def _now(self):
         return now_bj()
 
-    def login_9997(self):
-        s = self.session
-        s.get(BASE_9997 + "/login.jsp", timeout=self.timeout)
-        xsrf = s.cookies.get("XSRF-TOKEN")
-        if xsrf:
-            s.headers["X-XSRF-TOKEN"] = xsrf
-        r = s.post(BASE_9997 + "/roomLogin/login",
-                   data={"loginName": self.username, "loginPass": self.password},
-                   timeout=self.timeout)
-        idx = s.get(BASE_9997 + "/room/roomIndex", timeout=self.timeout).text
-        m = re.search(r"userId\s*=\s*['\"](\d+)['\"]", idx)
-        self.user_id = m.group(1) if m else None
-        xsrf = s.cookies.get("XSRF-TOKEN")
-        if xsrf:
-            s.headers["X-XSRF-TOKEN"] = xsrf
-        return self.user_id is not None
-
-    def _post_9997(self, path, **params):
+    def _post(self, path, **params):
         url = f"{BASE_9997}{path}"
         if params:
             enc = "&".join(f"{k}={urllib.parse.quote(str(v), safe='')}"
@@ -115,12 +124,25 @@ class Scheduler:
             self.session.headers["X-XSRF-TOKEN"] = xsrf
         try:
             r = self.session.post(url, timeout=self.timeout)
-            return r.text.strip()
+            text = r.text.strip()
         except Exception as e:
-            print(f"  [net] POST {path} error: {e}")
+            print(f"  [net] POST {path} error: {e}", flush=True)
             return "-1"
+        if "CSRF" in text or "1004" in text:
+            print("  [CSRF] token expired, re-login...", flush=True)
+            self.login()
+            xsrf = self.session.cookies.get("XSRF-TOKEN")
+            if xsrf:
+                self.session.headers["X-XSRF-TOKEN"] = xsrf
+            try:
+                r = self.session.post(url, timeout=self.timeout)
+                text = r.text.strip()
+            except Exception as e:
+                print(f"  [net] POST {path} retry error: {e}", flush=True)
+                return "-1"
+        return text
 
-    def _get_9997(self, path, **params):
+    def _get(self, path, **params):
         url = f"{BASE_9997}{path}"
         if params:
             enc = "&".join(f"{k}={urllib.parse.quote(str(v), safe='')}"
@@ -128,73 +150,246 @@ class Scheduler:
             url += "?" + enc
         try:
             r = self.session.get(url, timeout=self.timeout)
-            return r.text
         except Exception as e:
-            print(f"  [net] GET {path} error: {e}")
+            print(f"  [net] GET {path} error: {e}", flush=True)
             return ""
+        r.encoding = "utf-8"
+        if "login" in r.url.lower() or r.text.strip() == "":
+            self.login()
+            try:
+                r = self.session.get(url, timeout=self.timeout)
+            except Exception as e:
+                print(f"  [net] GET {path} retry error: {e}", flush=True)
+                return ""
+            r.encoding = "utf-8"
+        return r.text
 
-    def find_own_rooms(self):
-        rooms = {}
-        for lv in [1, 2, 3]:
-            html = self._get_9997("/room/gotoAddRoom",
-                                  userId=self.user_id, roomLevelId=lv)
-            for block in re.split(r'<div class="col-11 px-2 mb-3 room-list-item">', html):
-                owner = re.search(r"房主名字[：:]\s*([^<\s]+)", block)
-                if not owner:
-                    continue
-                if owner.group(1) != self.username:
-                    continue
-                m = re.search(r"gotoJoinRoom\('\d+','(\d+)','(\d+)'\)", block)
-                if not m:
-                    continue
-                level = int(m.group(1))
-                rid = m.group(2)
-                if "已结束" not in block:
-                    rooms[level] = rid
-        return rooms
+    def login(self, max_retries=10):
+        for attempt in range(max_retries):
+            if attempt > 0:
+                self.session = requests.Session()
+                self.session.headers.update({"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"})
+                print(f"  [login] retry {attempt+1}...", flush=True)
+                time.sleep(30)
+            r = self.session.post(f"{BASE_9997}/roomLogin/login",
+                                  data={"loginName": self.username, "loginPass": self.password},
+                                  timeout=self.timeout)
+            resp = r.text.strip()
+            if resp == "1":
+                idx = self._get("/room/roomIndex")
+                m = re.search(r"userId\s*=\s*['\"](\d+)['\"]", idx)
+                self.user_id = m.group(1) if m else None
+                print(f"[OK] login: {self.username} (userId={self.user_id})")
+                return True
+            print(f"[FAIL] login: {resp}", flush=True)
+        print(f"[FAIL] login failed after {max_retries} retries", flush=True)
+        return False
 
     def room_clean(self, room_level):
         try:
-            self._post_9997("/room/roomClean",
-                            userId=self.user_id, roomLevelId=room_level)
+            self._post("/room/roomClean", userId=self.user_id, roomLevelId=room_level)
         except Exception as e:
             print(f"  [clean] error: {e}")
 
-    def create_room(self, room_level=1):
+    def find_own_rooms(self):
+        found = {}
+        for lv in LEVELS:
+            try:
+                html = self._get("/room/gotoAddRoom", userId=self.user_id, roomLevelId=lv)
+                for block in re.split(r'<div class="col-11 px-2 mb-3 room-list-item">', html):
+                    owner_match = re.search(r'房主名字[：:]\s*([^<\s]+)', block)
+                    if not owner_match:
+                        continue
+                    owner = owner_match.group(1)
+                    if owner != self.username and owner != str(self.user_id):
+                        continue
+                    m = re.search(r"gotoJoinRoom\('\d+','\d+','(\d+)'\)", block)
+                    if m:
+                        rid = m.group(1)
+                        if lv not in found or "已结束" not in block:
+                            found[lv] = rid
+            except Exception:
+                continue
+        return found
+
+    def room_status(self, room_id, room_level):
+        try:
+            html = self._get("/room/gotoJoinRoom",
+                             userId=self.user_id, roomLevelId=room_level, roomId=room_id)
+            m = re.search(r"(\d+)/(\d+)", html)
+            if m:
+                return int(m.group(1)), int(m.group(2))
+        except Exception:
+            pass
+        return None, None
+
+    def is_room_finished(self, room_id, room_level):
+        try:
+            html = self._get("/room/gotoAddRoom", userId=self.user_id, roomLevelId=room_level)
+            for block in re.split(r'<div class="col-11 px-2 mb-3 room-list-item">', html):
+                if f"'{room_id}'" in block:
+                    return "已结束" in block
+        except Exception:
+            pass
+        return False
+
+    def is_room_started(self, room_id, room_level):
+        try:
+            html = self._get("/room/gotoAddRoom", userId=self.user_id, roomLevelId=room_level)
+            for block in re.split(r'<div class="col-11 px-2 mb-3 room-list-item">', html):
+                if f"'{room_id}'" in block:
+                    if "已结束" in block:
+                        return True
+                    if "继续等待" in block:
+                        return False
+                    if "进行中" in block or "进入竞赛" in block:
+                        return True
+                    return False
+        except Exception:
+            pass
+        return False
+
+    def _get_room_block(self, room_id, room_level):
+        try:
+            html = self._get("/room/gotoAddRoom", userId=self.user_id, roomLevelId=room_level)
+            for block in re.split(r'<div class="col-11 px-2 mb-3 room-list-item">', html):
+                if str(room_id) in block:
+                    return block
+        except Exception:
+            pass
+        return ""
+
+    def _get_room_name(self, room_id, room_level):
+        for attempt in range(5):
+            block = self._get_room_block(room_id, room_level)
+            if block:
+                for pattern in [
+                    r'房间名称[：:]\s*([^<]+)',
+                    r'class="room[^"]*name[^"]*"[^>]*>([^<]+)',
+                    r'自动测试\d{1,2}:\d{2}开',
+                    r'尔尔定时[^\s<]+',
+                ]:
+                    m = re.search(pattern, block)
+                    if m:
+                        return m.group(0).strip() if not m.lastindex else m.group(1).strip()
+            if attempt < 4:
+                time.sleep(3)
+        return ""
+
+    def _parse_start_time_from_name(self, room_name):
+        m = re.search(r'(\d{1,2}:\d{2})开', room_name)
+        if not m:
+            return None
+        h, mi = map(int, m.group(1).split(':'))
         now = self._now()
-        name = f"paopao3 {now.strftime('%H%M')}"
+        target = now.replace(hour=h, minute=mi, second=0, microsecond=0)
+        if target <= now:
+            return now
+        return target
+
+    def start_exp(self, room_id, room_level):
+        return self._post("/room/startRoomExp", type="1", roomId=room_id, userId=self.user_id)
+
+    def next_period(self, room_id, room_level):
+        return self._post("/room/startRoomExp", type="2", roomId=room_id, userId=self.user_id)
+
+    def finish_exp(self, room_id, room_level):
+        return self._post("/room/startRoomExp", type="3",
+                          roomId=room_id, userId=self.user_id, roomLevelId=room_level)
+
+    def create_room(self, room_level, created_at, room_name=None):
+        level = LEVELS[room_level]
+        n = level["full_n"]
+        force_time = created_at + dt.timedelta(minutes=FORCE_START_AFTER)
+        if room_name is None:
+            name = ROOM_NAME_TPL.format(n=n, time=force_time.strftime("%H:%M"))
+        else:
+            name = room_name
         self.room_clean(room_level)
-        time.sleep(2)
         params = {
             "userId": self.user_id, "roomLevelId": room_level,
-            "roomName": name, "roomPassword": "123",
-            "totalPeriod": "4", "isNeed": "0", "roomPeriodLength": "20",
+            "roomName": name, "roomPassword": ROOM_PASSWORD,
+            "totalPeriod": TOTAL_PERIOD, "isNeed": "0",
+            "roomPeriodLength": PERIOD_LENGTH,
         }
-        resp = self._post_9997("/room/addRoom", **params)
-        print(f"  [create] addRoom: {resp}")
+        try:
+            resp = self._post("/room/addRoom", **params)
+        except Exception as e:
+            print(f"  [create] error: {e}", flush=True)
+            return False, None
+        print(f"  [create] addRoom: {resp}", flush=True)
+        if resp in ("0", "2", "3"):
+            print(f"  [create] failed: code={resp}", flush=True)
+            return False, None
         time.sleep(3)
-        rooms = self.find_own_rooms()
-        room_id = rooms.get(room_level)
-        if room_id:
-            print(f"  [create] success! room={room_id}")
-        return room_id
+        room_id = self.find_own_rooms().get(room_level)
+        if room_id is None:
+            time.sleep(3)
+            room_id = self.find_own_rooms().get(room_level)
+        if room_id is None:
+            print(f"  [create] success but room not found!", flush=True)
+            return False, None
+        print(f"  [create] success! level={room_level}({level['name']}) room={room_id} name=[{name}]", flush=True)
+        return True, room_id
 
-    def start_room(self, room_id):
-        resp = self._post_9997("/room/startRoomExp",
-                               type="1", roomId=room_id, userId=self.user_id)
-        print(f"  [start] resp: {resp}")
-        return resp == "1"
+    def wait_and_start(self, room_id, room_level, created_at):
+        room_name = self._get_room_name(room_id, room_level)
+        target_time = self._parse_start_time_from_name(room_name)
+        if not target_time:
+            target_time = created_at + dt.timedelta(minutes=FORCE_START_AFTER)
+        wait_sec = (target_time - self._now()).total_seconds()
+        if wait_sec > 0:
+            print(f"  [wait] room {room_id} [{room_name}] start {target_time.strftime('%H:%M')}, wait {wait_sec/60:.0f}min", flush=True)
+            while self._now() < target_time:
+                time.sleep(min(30, max(1, wait_sec)))
+                wait_sec = (target_time - self._now()).total_seconds()
+        print(f"  [start] time! starting...", flush=True)
+        while True:
+            self.start_exp(room_id, room_level)
+            time.sleep(5)
+            if self.is_room_started(room_id, room_level):
+                print("  [start] room started!", flush=True)
+                return True
+            players, maxp = self.room_status(room_id, room_level)
+            if players is None:
+                print("  [start] room gone", flush=True)
+                return False
+            print(f"  [start] not started({players}/{maxp}), retry in 10s...", flush=True)
+            time.sleep(10)
 
-    def flip_room(self, room_id):
-        resp = self._post_9997("/room/startRoomExp",
-                               type="2", roomId=room_id, userId=self.user_id)
-        return resp
+    def pick_level(self, primary, secondary):
+        try:
+            html = self._get("/room/gotoAddRoom", userId=self.user_id, roomLevelId=primary)
+            stux_m = re.search(r'var stuX\s*=\s*[\'"](\d+)[\'"]', html)
+            if stux_m and stux_m.group(1) != "0":
+                return primary
+        except Exception:
+            return primary
+        try:
+            html = self._get("/room/gotoAddRoom", userId=self.user_id, roomLevelId=secondary)
+            stux_m = re.search(r'var stuX\s*=\s*[\'"](\d+)[\'"]', html)
+            if stux_m and stux_m.group(1) != "0":
+                return secondary
+        except Exception:
+            return primary
+        return 1
 
-    def end_room(self, room_id, room_level):
-        resp = self._post_9997("/room/startRoomExp",
-                               type="3", roomId=room_id, userId=self.user_id,
-                               roomLevelId=room_level)
-        return resp
+    def plan_level(self):
+        now = self._now()
+        h = now.hour + now.minute / 60
+        if 8 <= h < 9:
+            return (1, 1)
+        if 9 <= h < 12:
+            return (2, 1)
+        if 12 <= h < 14:
+            return (1, 1)
+        if 14 <= h < 17:
+            return (2, 1)
+        if 17 <= h < 20:
+            return (3, 2)
+        if 20 <= h < START_LIMIT_HOUR:
+            return (1, 1)
+        return None
 
 
 class DecisionClient:
@@ -252,9 +447,12 @@ class DecisionClient:
         return r.json()
 
     def get_period(self, uid, room_id):
-        s, user, _ = self.login_9001(uid, room_id)
-        if user:
-            return int(user.get("periodNum", 1))
+        try:
+            s, user, _ = self.login_9001(uid, room_id)
+            if user:
+                return int(user.get("periodNum", 1))
+        except Exception:
+            pass
         return 1
 
     def submit_all_decisions(self, uid, room_id, period_num):
@@ -347,7 +545,6 @@ class DecisionClient:
 
         # type6
         if quarter == 1:
-            tp = twp = tgp = 0
             type6_str = "0,0,0,0,0,0,0,0,0,10,11,12,13,13,15,12,14,5,5,2,2,"
         elif quarter == 2:
             tp = random.randint(1, 250) * 10000
@@ -408,8 +605,8 @@ class DecisionClient:
 
 
 def main():
-    username = os.environ.get("BOT_USER", "自动-1")
-    password = os.environ.get("BOT_PASS", "321")
+    username = os.environ.get("BOT_USER", "星星在南")
+    password = os.environ.get("BOT_PASS", "123456@a")
 
     print(f"{'='*50}")
     print(f"paopao3 scheduler {now_bj().strftime('%Y-%m-%d %H:%M:%S')}")
@@ -418,104 +615,145 @@ def main():
     sched = Scheduler(username, password)
     dc = DecisionClient()
 
-    if not sched.login_9997():
-        print("Login 9997 failed")
+    if not sched.login():
+        print("Login failed")
         return
 
-    state = load_state()
-    room_id = state.get("room_id")
-    room_level = state.get("room_level", 1)
+    sched.start_ts = time.time()
 
-    # Check existing room
-    if room_id:
-        rooms = sched.find_own_rooms()
-        if room_level not in rooms or rooms[room_level] != room_id:
-            print(f"Room {room_id} not found, checking...")
-            room_id = rooms.get(room_level)
-            if room_id:
-                state["room_id"] = room_id
-                save_state(state)
+    while True:
+        if sched._time_left() < 600:
+            print("===接近时限, exit===", flush=True)
+            return
 
-    # Create room if needed
-    if not room_id:
-        rooms = sched.find_own_rooms()
-        if rooms:
-            room_level = list(rooms.keys())[0]
-            room_id = rooms[room_level]
-            print(f"Found existing room: {room_id} (level {room_level})")
-            state["room_id"] = room_id
-            state["room_level"] = room_level
-            save_state(state)
-        else:
-            print("Creating room...")
-            room_id = sched.create_room(room_level)
-            if not room_id:
-                print("Create room failed")
+        now = sched._now()
+        print(f"\n[{now.strftime('%H:%M:%S')}] main loop", flush=True)
+
+        plan = sched.plan_level()
+        if plan is None:
+            print(f"[{now.strftime('%H:%M')}] after {START_LIMIT_HOUR}h, check rooms...", flush=True)
+            own = sched.find_own_rooms()
+            if own:
+                for lv, rid in own.items():
+                    if not sched.is_room_finished(rid, lv):
+                        print(f"[handle] level {lv} room {rid} not finished", flush=True)
+                        sched.wait_and_start(rid, lv, now)
+                        break
+                else:
+                    print("all finished, done", flush=True)
+                    return
+                continue
+            else:
+                print("no rooms, done", flush=True)
                 return
-            state = {"room_id": room_id, "room_level": room_level,
-                     "created_at": now_bj().isoformat()}
-            save_state(state)
-            print(f"Room created: {room_id}")
 
-    # Start room if not started
-    if not state.get("started"):
-        print("Starting room...")
-        if sched.start_room(room_id):
-            state["started"] = True
-            state["start_time"] = now_bj().isoformat()
-            save_state(state)
-            print("Room started!")
-        else:
-            print("Start failed, will retry")
+        primary, secondary = plan
+        print(f"  plan: primary={LEVELS[primary]['name']} secondary={LEVELS[secondary]['name']}", flush=True)
 
-    # Get current period
-    uid = sched.user_id
-    period = dc.get_period(uid, room_id)
-    print(f"Current period: {period}")
-
-    if period > 4:
-        print("Game over!")
-        sched.end_room(room_id, room_level)
-        save_state({})
-        return
-
-    # Submit decisions if not done
-    key = f"q{period}_done"
-    if not state.get(key):
-        print(f"Submitting Q{period} decisions...")
-        for attempt in range(3):
-            try:
-                if dc.submit_all_decisions(uid, room_id, period):
-                    state[key] = True
-                    state[f"q{period}_flip_at"] = time.time()
-                    save_state(state)
-                    print(f"Q{period} decisions submitted!")
+        own = sched.find_own_rooms()
+        print(f"  found {len(own)} rooms", flush=True)
+        if own:
+            has_active = False
+            for lv, rid in own.items():
+                if not sched.is_room_finished(rid, lv):
+                    print(f"[handle] level {lv} room {rid} not finished", flush=True)
+                    sched.wait_and_start(rid, lv, now)
+                    has_active = True
                     break
-            except Exception as e:
-                print(f"  Error: {e}")
+            if has_active:
+                continue
+            print("  all rooms finished, create new", flush=True)
+
+        room_level = primary if primary == secondary else sched.pick_level(primary, secondary)
+        print(f"  selected level: {room_level}({LEVELS[room_level]['name']})", flush=True)
+
+        print(f"  [create] creating level {room_level}...", flush=True)
+        created_at = sched._now()
+        ok, room_id = sched.create_room(room_level, created_at)
+        if not ok:
+            own = sched.find_own_rooms()
+            if own:
+                print(f"  [create] failed but found {len(own)} rooms, handle", flush=True)
+                for lv, rid in own.items():
+                    if not sched.is_room_finished(rid, lv):
+                        sched.wait_and_start(rid, lv, now)
+                        break
+                continue
+            print("  [create] failed, wait 2min", flush=True)
+            time.sleep(120)
+            continue
+        print(f"  [create] success! room={room_id}", flush=True)
+
+        started = sched.wait_and_start(room_id, room_level, created_at)
+        if started:
+            current_period = 1
+            current_period = dc.get_period(sched.user_id, room_id)
+            print(f"  [flip] current period: {current_period}", flush=True)
+
+            if current_period > 4:
+                print("  [flip] game over, end room", flush=True)
+                sched.finish_exp(room_id, room_level)
+                continue
+
+            print(f"  [flip] submit Q{current_period} decisions...", flush=True)
+            for attempt in range(3):
+                try:
+                    if dc.submit_all_decisions(sched.user_id, room_id, current_period):
+                        break
+                except Exception as e:
+                    print(f"  [flip] error: {e}")
+                    time.sleep(30)
+
+            no_flip_count = 0
+            while current_period < TOTAL_PERIOD:
+                if sched._time_left() < 600:
+                    print("  [flip]接近时限, exit", flush=True)
+                    return
+                if sched.is_room_finished(room_id, room_level):
+                    print("  [flip] room finished", flush=True)
+                    break
+                resp = sched.next_period(room_id, room_level)
+                if resp == "1":
+                    current_period += 1
+                    no_flip_count = 0
+                    print(f"  [flip] flipped! now period {current_period}", flush=True)
+                    print(f"  [flip] submit Q{current_period} decisions...", flush=True)
+                    for attempt in range(3):
+                        try:
+                            if dc.submit_all_decisions(sched.user_id, room_id, current_period):
+                                break
+                        except Exception as e:
+                            print(f"  [flip] error: {e}")
+                            time.sleep(30)
+                    if sched.is_room_finished(room_id, room_level):
+                        print("  [flip] room finished after flip", flush=True)
+                        break
+                else:
+                    no_flip_count += 1
+                    print(f"  [flip] resp={resp}, retry in 30s...", flush=True)
+                    time.sleep(30)
+                    if no_flip_count >= 20:
+                        print("  [flip] too many retries, finish room", flush=True)
+                        resp2 = sched.finish_exp(room_id, room_level)
+                        if resp2 == "1" or sched.is_room_finished(room_id, room_level):
+                            print("  [flip] room finished!", flush=True)
+                            break
+                        no_flip_count = 0
+
+            print("  [finish] end room...", flush=True)
+            while True:
+                if sched._time_left() < 600:
+                    print("  [finish]接近时限, exit", flush=True)
+                    return
+                resp = sched.finish_exp(room_id, room_level)
+                if resp == "1":
+                    print("  [finish] done!", flush=True)
+                    break
+                if sched.is_room_finished(room_id, room_level):
+                    print("  [finish] room finished!", flush=True)
+                    break
+                print(f"  [finish] resp={resp}, retry in 30s...", flush=True)
                 time.sleep(30)
-
-    # Try to flip
-    flip_at = state.get(f"q{period}_flip_at", 0)
-    elapsed = time.time() - flip_at if flip_at else 0
-
-    if elapsed >= 1200:
-        print(f"Flipping Q{period}...")
-        resp = sched.flip_room(room_id)
-        print(f"  Flip result: {resp}")
-        if resp == "1":
-            del state[key]
-            if f"q{period}_flip_at" in state:
-                del state[f"q{period}_flip_at"]
-            save_state(state)
-            print("Flip OK!")
-        else:
-            print("Not time yet or error")
-    elif flip_at:
-        remaining = 1200 - elapsed
-        print(f"Wait {remaining:.0f}s to flip")
-    else:
-        print("No flip time recorded yet")
 
 
 if __name__ == "__main__":
