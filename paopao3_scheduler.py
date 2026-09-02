@@ -134,22 +134,23 @@ class Scheduler:
             return ""
 
     def find_own_rooms(self):
-        html = self._get_9997("/room/gotoAddRoom",
-                              userId=self.user_id, roomLevelId=1)
         rooms = {}
-        for block in re.split(r'<div class="col-11 px-2 mb-3 room-list-item">', html):
-            owner = re.search(r"房主名字[：:]\s*([^<\s]+)", block)
-            if not owner:
-                continue
-            if owner.group(1) != self.username:
-                continue
-            m = re.search(r"gotoJoinRoom\('\d+','(\d+)','(\d+)'\)", block)
-            if not m:
-                continue
-            level = int(m.group(1))
-            rid = m.group(2)
-            if "已结束" not in block:
-                rooms[level] = rid
+        for lv in [1, 2, 3]:
+            html = self._get_9997("/room/gotoAddRoom",
+                                  userId=self.user_id, roomLevelId=lv)
+            for block in re.split(r'<div class="col-11 px-2 mb-3 room-list-item">', html):
+                owner = re.search(r"房主名字[：:]\s*([^<\s]+)", block)
+                if not owner:
+                    continue
+                if owner.group(1) != self.username:
+                    continue
+                m = re.search(r"gotoJoinRoom\('\d+','(\d+)','(\d+)'\)", block)
+                if not m:
+                    continue
+                level = int(m.group(1))
+                rid = m.group(2)
+                if "已结束" not in block:
+                    rooms[level] = rid
         return rooms
 
     def room_clean(self, room_level):
