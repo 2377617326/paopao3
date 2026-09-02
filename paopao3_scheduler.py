@@ -714,21 +714,27 @@ def main():
 
         plan = sched.plan_level()
         if plan is None:
-            print(f"[{now.strftime('%H:%M')}] after {START_LIMIT_HOUR}h", flush=True)
+            print(f"[{now.strftime('%H:%M')}] after {START_LIMIT_HOUR}h, check rooms...", flush=True)
             own = sched.find_own_rooms()
+            has_handleable = False
             if own:
                 for lv, rid in own.items():
                     if rid not in skip_rooms and not sched.is_room_finished(rid, lv):
                         handle_room(sched, dc, rid, lv)
                         skip_rooms.add(rid)
+                        has_handleable = True
                         break
+            if not has_handleable:
+                print("  no handleable rooms, create new", flush=True)
+                room_level = 1
+                ok, room_id = sched.create_room(room_level, sched._now())
+                if ok:
+                    print(f"  [create] success! room={room_id}", flush=True)
+                    handle_room(sched, dc, room_id, room_level)
                 else:
-                    print("all finished", flush=True)
-                    return
-                continue
-            else:
-                print("no rooms, done", flush=True)
-                return
+                    print("  [create] failed", flush=True)
+                    time.sleep(30)
+            continue
 
         primary, secondary = plan
         print(f"  plan: primary={LEVELS[primary]['name']} secondary={LEVELS[secondary]['name']}", flush=True)
