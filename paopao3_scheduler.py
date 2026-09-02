@@ -702,6 +702,7 @@ def main():
         return
 
     sched.start_ts = time.time()
+    skip_rooms = set()
 
     while True:
         if sched._time_left() < 600:
@@ -717,8 +718,9 @@ def main():
             own = sched.find_own_rooms()
             if own:
                 for lv, rid in own.items():
-                    if not sched.is_room_finished(rid, lv):
+                    if rid not in skip_rooms and not sched.is_room_finished(rid, lv):
                         handle_room(sched, dc, rid, lv)
+                        skip_rooms.add(rid)
                         break
                 else:
                     print("all finished", flush=True)
@@ -734,15 +736,16 @@ def main():
         own = sched.find_own_rooms()
         print(f"  found {len(own)} rooms", flush=True)
         if own:
+            handled = False
             for lv, rid in own.items():
-                if not sched.is_room_finished(rid, lv):
+                if rid not in skip_rooms and not sched.is_room_finished(rid, lv):
                     handle_room(sched, dc, rid, lv)
+                    skip_rooms.add(rid)
+                    handled = True
                     break
-            else:
-                print("  all rooms finished, create new", flush=True)
-                own = {}
-            if own:
+            if handled:
                 continue
+            print("  all rooms finished, create new", flush=True)
 
         room_level = primary if primary == secondary else sched.pick_level(primary, secondary)
         print(f"  selected: {room_level}({LEVELS[room_level]['name']})", flush=True)
@@ -754,8 +757,9 @@ def main():
             own = sched.find_own_rooms()
             if own:
                 for lv, rid in own.items():
-                    if not sched.is_room_finished(rid, lv):
+                    if rid not in skip_rooms and not sched.is_room_finished(rid, lv):
                         handle_room(sched, dc, rid, lv)
+                        skip_rooms.add(rid)
                         break
                 continue
             print("  [create] failed, wait 30s", flush=True)
