@@ -25,6 +25,13 @@ jobs:
       - name: Install dependencies
         run: pip install requests
 
+      - name: Restore state
+        uses: actions/download-artifact@v4
+        with:
+          name: paopao3-state
+          path: .
+        continue-on-error: true
+
       - name: Run scheduler
         run: python paopao3_scheduler.py
 
@@ -54,11 +61,3 @@ jobs:
           else
             echo "BJ ${HOUR_BJ}:00, off hours"
           fi
-
-      - name: Restore state
-        if: always()
-        uses: actions/download-artifact@v4
-        with:
-          name: paopao3-state
-          path: .
-        continue-on-error: true
