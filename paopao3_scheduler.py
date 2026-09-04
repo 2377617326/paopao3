@@ -606,14 +606,11 @@ class DecisionClient:
 
 def flip_loop(sched, dc, room_id, room_level):
     uid = sched.user_id
+    if sched.is_room_finished(room_id, room_level):
+        print("  [flip] room already finished", flush=True)
+        return True
     current_period = dc.get_period(uid, room_id)
     print(f"  [flip] current period: {current_period}", flush=True)
-
-    if current_period > 4:
-        print("  [flip] game over", flush=True)
-        sched.finish_exp(room_id, room_level)
-        return True
-
     for attempt in range(3):
         try:
             dc.submit_all_decisions(uid, room_id, current_period)
@@ -621,7 +618,6 @@ def flip_loop(sched, dc, room_id, room_level):
         except Exception as e:
             print(f"  [flip] submit error: {e}", flush=True)
             time.sleep(30)
-
     no_flip_count = 0
     while current_period < TOTAL_PERIOD:
         if sched._time_left() < 600:
@@ -650,20 +646,29 @@ def flip_loop(sched, dc, room_id, room_level):
             print(f"  [flip] resp={resp}, retry 30s...", flush=True)
             time.sleep(30)
             if no_flip_count >= 20:
-                print("  [flip] too many retries, finish", flush=True)
-                sched.finish_exp(room_id, room_level)
-                return True
-
-    print("  [finish] end room...", flush=True)
-    for _ in range(20):
+                print("  [finish] long time no flip, try finish...", flush=True)
+                for _ in range(20):
+                    if sched._time_left() < 600:
+                        return False
+                    resp2 = sched.finish_exp(room_id, room_level)
+                    if resp2 == "1" or sched.is_room_finished(room_id, room_level):
+                        print("  [finish] room finished!", flush=True)
+                        return True
+                    time.sleep(30)
+                no_flip_count = 0
+    print("  [finish] Q4 done, end room...", flush=True)
+    while True:
         if sched._time_left() < 600:
+            print("  [finish] time limit, exit", flush=True)
             return False
         resp = sched.finish_exp(room_id, room_level)
-        if resp == "1" or sched.is_room_finished(room_id, room_level):
+        if resp == "1":
             print("  [finish] done!", flush=True)
             return True
+        if sched.is_room_finished(room_id, room_level):
+            print("  [finish] room finished!", flush=True)
+            return True
         time.sleep(30)
-    return True
 
 
 def handle_room(sched, dc, room_id, room_level):
@@ -682,7 +687,8 @@ def handle_room(sched, dc, room_id, room_level):
         if not started:
             return False
 
-    flip_loop(sched, dc, room_id, room_level)
+    new_dc = DecisionClient()
+    flip_loop(sched, new_dc, room_id, room_level)
     return True
 
 
