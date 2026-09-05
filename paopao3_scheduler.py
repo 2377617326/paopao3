@@ -641,6 +641,21 @@ def flip_loop(sched, dc, room_id, room_level):
             if sched.is_room_finished(room_id, room_level):
                 print("  [flip] room finished after flip", flush=True)
                 return True
+        elif resp == "0":
+            no_flip_count += 1
+            print(f"  [flip] not ready yet, wait 60s... ({no_flip_count})", flush=True)
+            time.sleep(60)
+            if no_flip_count >= 25:
+                print("  [finish] long time no flip, try finish...", flush=True)
+                for _ in range(20):
+                    if sched._time_left() < 600:
+                        return False
+                    resp2 = sched.finish_exp(room_id, room_level)
+                    if resp2 == "1" or sched.is_room_finished(room_id, room_level):
+                        print("  [finish] room finished!", flush=True)
+                        return True
+                    time.sleep(30)
+                no_flip_count = 0
         else:
             no_flip_count += 1
             print(f"  [flip] resp={resp}, retry 30s...", flush=True)
