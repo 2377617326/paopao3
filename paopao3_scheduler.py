@@ -708,8 +708,8 @@ def handle_room(sched, dc, room_id, room_level):
 
 
 def main():
-    username = os.environ.get("BOT_USER", "自动房间-1")
-    password = os.environ.get("BOT_PASS", "王敬淇2359921833")
+    username = os.environ.get("BOT_USER", "王敬淇")
+    password = os.environ.get("BOT_PASS", "2359921833")
 
     print(f"{'='*50}")
     print(f"paopao3 scheduler {now_bj().strftime('%Y-%m-%d %H:%M:%S')}")
