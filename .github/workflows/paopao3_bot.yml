@@ -33,8 +33,8 @@ jobs:
 
       - name: Run scheduler
         env:
-          BOT_USER: "自动房间-1"
-          BOT_PASS: "王敬淇2359921833"
+          BOT_USER: "王敬淇"
+          BOT_PASS: "2359921833"
         run: python paopao3_scheduler.py
 
       - name: Save state
