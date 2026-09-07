@@ -455,23 +455,41 @@ class DecisionClient:
             pass
         return 1
 
+    def _submit_with_fallback(self, s, user, ck, period_num, typ, decision_str,
+                               fallback_str, state=0):
+        r = self.submit_decision(s, user, ck, period_num, typ, decision_str, state=state)
+        ok = r.get("Status") == 2000
+        if not ok:
+            print(f"    type{typ}: FAIL, retry all-1s...")
+            r = self.submit_decision(s, user, ck, period_num, typ, fallback_str, state=state)
+            ok = r.get("Status") == 2000
+        print(f"    type{typ}: {'OK' if ok else 'FAIL'}")
+        return ok
+
     def submit_all_decisions(self, uid, room_id, period_num):
         s, user, ck = self.login_9001(uid, room_id)
         if s is None:
-            print(f"    [9001] login failed")
-            return False
+            print(f"    [9001] login failed, retry with all-1s fallback...")
+            try:
+                s2, user2, ck2 = self.login_9001(uid, room_id)
+                if s2 is None:
+                    print(f"    [9001] login failed again, give up")
+                    return False
+                s, user, ck = s2, user2, ck2
+            except Exception:
+                return False
 
         n = 8
         quarter = period_num
+        ALL_1S = "1,1,1,1,1,1,1,1,1,"
 
         # type4
-        r = self.submit_decision(s, user, ck, period_num, 4,
-                                 "9,9,9,1,9,9,9,1,9,9,9,1,")
-        ok = r.get("Status") == 2000
-        print(f"    type4: {'OK' if ok else 'FAIL'}")
+        self._submit_with_fallback(s, user, ck, period_num, 4,
+                                   "9,9,9,1,9,9,9,1,9,9,9,1,",
+                                   "1,1,1,1,1,1,1,1,1,1,1,1,")
 
         # type5
-        salary = random.randint(3900, 4150)
+        salary = random.randint(3900, 4100)
         commission = round(random.uniform(2.4, 3.15), 2)
         if quarter == 1:
             type5_str = "99,99,99,9,9,9,0,0,0,0,0,0,0,0,0,0,0,0,3800,1.5,9,9,9,"
@@ -487,8 +505,8 @@ class DecisionClient:
             type5_str = (f"99,99,99,{tv_a[0]},{wa[0]},{ga[0]},"
                          f"0,0,0,0,0,0,0,0,0,0,0,0,"
                          f"{salary},{commission},9,9,9,")
-        r = self.submit_decision(s, user, ck, period_num, 5, type5_str)
-        print(f"    type5: {'OK' if r.get('Status') == 2000 else 'FAIL'}")
+        type5_fb = "1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,"
+        self._submit_with_fallback(s, user, ck, period_num, 5, type5_str, type5_fb)
 
         # type3
         tv_total = watch_total = game_total = 0
@@ -533,15 +551,15 @@ class DecisionClient:
             game_total = ga_e + ga_c + ga_w
             type3_str = (f"{tv_e},{tv_c},{tv_w},{wa_e},{wa_c},{wa_w},"
                          f"{ga_e},{ga_c},{ga_w},")
-        r = self.submit_decision(s, user, ck, period_num, 3, type3_str)
-        print(f"    type3: {'OK' if r.get('Status') == 2000 else 'FAIL'}")
+        type3_fb = "1,1,1,1,1,1,1,1,1,"
+        self._submit_with_fallback(s, user, ck, period_num, 3, type3_str, type3_fb)
 
         # type1
         t1 = tv_total + 480
         w1 = watch_total + 480
         g1 = game_total + 480
-        r = self.submit_decision(s, user, ck, period_num, 1, f"{t1},{w1},{g1},")
-        print(f"    type1: {'OK' if r.get('Status') == 2000 else 'FAIL'}")
+        self._submit_with_fallback(s, user, ck, period_num, 1,
+                                   f"{t1},{w1},{g1},", "1,1,1,")
 
         # type6
         if quarter == 1:
@@ -564,8 +582,8 @@ class DecisionClient:
             tgp = random.randint(850, 1150) * 10000
             type6_str = (f"{tp},{tp},{tp},{twp},{twp},{twp},"
                          f"{tgp},{tgp},{tgp},10,11,12,13,13,15,12,14,5,5,2,2,")
-        r6 = self.submit_decision(s, user, ck, period_num, 6, type6_str)
-        print(f"    type6: {'OK' if r6.get('Status') == 2000 else 'FAIL'}")
+        type6_fb = "1,1,1,1,1,1,1,1,1,10,11,12,13,13,15,12,14,5,5,2,2,"
+        self._submit_with_fallback(s, user, ck, period_num, 6, type6_str, type6_fb)
 
         # type2
         if quarter == 1:
@@ -589,18 +607,18 @@ class DecisionClient:
             rdw = random.randint(2700, 4500) * 10000
             rdg = random.randint(3500, 6000) * 10000
         type2_str = f"{rdt},{rdw},{rdg},100,100,100,"
-        r = self.submit_decision(s, user, ck, period_num, 2, type2_str)
-        print(f"    type2: {'OK' if r.get('Status') == 2000 else 'FAIL'}")
+        self._submit_with_fallback(s, user, ck, period_num, 2, type2_str,
+                                   "1,1,1,1,1,1,")
 
         # type7
-        r = self.submit_decision(s, user, ck, period_num, 7,
-                                 "9999,7999,9999,9999,7999,9999,9999,7999,9999,")
-        print(f"    type7: {'OK' if r.get('Status') == 2000 else 'FAIL'}")
+        self._submit_with_fallback(s, user, ck, period_num, 7,
+                                   "9999,7999,9999,9999,7999,9999,9999,7999,9999,",
+                                   "1,1,1,1,1,1,1,1,1,")
 
         # type8
-        r = self.submit_decision(s, user, ck, period_num, 8,
-                                 "1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,", state=2)
-        print(f"    type8: {'OK' if r.get('Status') == 2000 else 'FAIL'}")
+        self._submit_with_fallback(s, user, ck, period_num, 8,
+                                   "1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,",
+                                   "1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,", state=2)
         return True
 
 
