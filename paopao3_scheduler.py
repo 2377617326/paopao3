@@ -70,7 +70,7 @@ LEVELS = {
     3: {"name": "群雄争霸", "full_n": 18},
 }
 
-ROOM_NAME_MARK = "尔尔定时比赛q群5342744003"
+ROOM_NAME_MARK = "定时训练赛q群5342744003"
 ROOM_NAME_TPL = ROOM_NAME_MARK + " 自动测试{time}开"
 TOTAL_PERIOD = 4
 PERIOD_LENGTH = 20
@@ -635,7 +635,7 @@ def flip_loop(sched, dc, room_id, room_level):
             break
         except Exception as e:
             print(f"  [flip] submit error: {e}", flush=True)
-            time.sleep(30)
+            time.sleep(10)
     no_flip_count = 0
     while current_period < TOTAL_PERIOD:
         if sched._time_left() < 600:
@@ -655,15 +655,15 @@ def flip_loop(sched, dc, room_id, room_level):
                     break
                 except Exception as e:
                     print(f"  [flip] submit error: {e}", flush=True)
-                    time.sleep(30)
+                    time.sleep(10)
             if sched.is_room_finished(room_id, room_level):
                 print("  [flip] room finished after flip", flush=True)
                 return True
         elif resp == "0":
             no_flip_count += 1
-            print(f"  [flip] not ready yet, wait 60s... ({no_flip_count})", flush=True)
-            time.sleep(60)
-            if no_flip_count >= 25:
+            print(f"  [flip] not ready yet, wait 10s... ({no_flip_count})", flush=True)
+            time.sleep(10)
+            if no_flip_count >= 120:
                 print("  [finish] long time no flip, try finish...", flush=True)
                 for _ in range(20):
                     if sched._time_left() < 600:
@@ -676,9 +676,9 @@ def flip_loop(sched, dc, room_id, room_level):
                 no_flip_count = 0
         else:
             no_flip_count += 1
-            print(f"  [flip] resp={resp}, retry 30s...", flush=True)
-            time.sleep(30)
-            if no_flip_count >= 20:
+            print(f"  [flip] resp={resp}, retry 10s...", flush=True)
+            time.sleep(10)
+            if no_flip_count >= 120:
                 print("  [finish] long time no flip, try finish...", flush=True)
                 for _ in range(20):
                     if sched._time_left() < 600:
