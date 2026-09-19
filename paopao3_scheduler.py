@@ -171,8 +171,13 @@ class Scheduler:
                 self.session.headers.update({"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"})
                 print(f"  [login] retry {attempt+1}...", flush=True)
                 time.sleep(30)
+            # GET /login.jsp for CSRF
+            try:
+                self.session.get(f"{BASE_9997}/login.jsp", timeout=self.timeout)
+            except Exception:
+                pass
             r = self.session.post(f"{BASE_9997}/roomLogin/login",
-                                  data={"loginName": self.username, "loginPass": self.password},
+                                  data={"loginName": self.username, "loginPass": self.password, "type": "2"},
                                   timeout=self.timeout)
             resp = r.text.strip()
             if resp == "1":
@@ -459,166 +464,188 @@ class DecisionClient:
                                fallback_str, state=0):
         r = self.submit_decision(s, user, ck, period_num, typ, decision_str, state=state)
         ok = r.get("Status") == 2000
+        err = r.get("ErrorNumber", 0)
         if not ok:
+            if err == 2702:
+                return ok, 2702
             print(f"    type{typ}: FAIL, retry all-1s...")
             r = self.submit_decision(s, user, ck, period_num, typ, fallback_str, state=state)
             ok = r.get("Status") == 2000
         print(f"    type{typ}: {'OK' if ok else 'FAIL'}")
-        return ok
+        return ok, 0
 
     def submit_all_decisions(self, uid, room_id, period_num):
         s, user, ck = self.login_9001(uid, room_id)
         if s is None:
-            print(f"    [9001] login failed, retry with all-1s fallback...")
-            try:
-                s2, user2, ck2 = self.login_9001(uid, room_id)
-                if s2 is None:
-                    print(f"    [9001] login failed again, give up")
-                    return False
-                s, user, ck = s2, user2, ck2
-            except Exception:
-                return False
+            print(f"    [9001] login failed")
+            return False
 
-        n = 8
-        quarter = period_num
-        ALL_1S = "1,1,1,1,1,1,1,1,1,"
+        for retry in range(3):
+            n = 8
+            quarter = period_num
+            has_2702 = False
 
-        # type4
-        self._submit_with_fallback(s, user, ck, period_num, 4,
+            # type4
+            ok, err = self._submit_with_fallback(s, user, ck, period_num, 4,
                                    "9,9,9,1,9,9,9,1,9,9,9,1,",
                                    "1,1,1,1,1,1,1,1,1,1,1,1,")
+            if err == 2702:
+                has_2702 = True
 
-        # type5
-        salary = random.randint(3900, 4100)
-        commission = round(random.uniform(2.4, 3.15), 2)
-        if quarter == 1:
-            type5_str = "99,99,99,9,9,9,0,0,0,0,0,0,0,0,0,0,0,0,3800,1.5,9,9,9,"
-        elif quarter == 4:
-            alloc_idx = random.choices([0, 1, 2], weights=[5, 80, 15])[0]
-            tv_a, wa, ga = Q4_TIME_ALLOC[alloc_idx]
-            type5_str = (f"99,99,99,{tv_a[0]},{wa[0]},{ga[0]},"
-                         f"0,0,0,0,0,0,0,0,0,0,0,0,"
-                         f"{salary},{commission},9,9,9,")
-        else:
-            alloc_idx = random.choices([0, 1, 2], weights=[80, 15, 5])[0]
-            tv_a, wa, ga = Q2Q3_TIME_ALLOC[alloc_idx]
-            type5_str = (f"99,99,99,{tv_a[0]},{wa[0]},{ga[0]},"
-                         f"0,0,0,0,0,0,0,0,0,0,0,0,"
-                         f"{salary},{commission},9,9,9,")
-        type5_fb = "1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,"
-        self._submit_with_fallback(s, user, ck, period_num, 5, type5_str, type5_fb)
-
-        # type3
-        tv_total = watch_total = game_total = 0
-        if quarter == 1:
-            tv_east = 1500
-            game_east = 10000
-            watch_east = max(0, int((45000 - 45000 - tv_east * COST_TV
-                                    - game_east * COST_GAME) / COST_WATCH))
-            tv_total = tv_east
-            watch_total = watch_east
-            game_total = game_east
-            type3_str = f"{tv_east},0,0,{watch_east},0,0,{game_east},0,0,"
-        else:
-            if quarter == 2:
-                sc = Q2_SCENARIOS
-            elif quarter == 3:
-                sc = Q3_SCENARIOS
+            # type5
+            salary = random.randint(3900, 4100)
+            commission = round(random.uniform(2.4, 3.15), 2)
+            if quarter == 1:
+                type5_str = "99,99,99,9,9,9,0,0,0,0,0,0,0,0,0,0,0,0,3800,1.5,9,9,9,"
+            elif quarter == 4:
+                alloc_idx = random.choices([0, 1, 2], weights=[5, 80, 15])[0]
+                tv_a, wa, ga = Q4_TIME_ALLOC[alloc_idx]
+                type5_str = (f"99,99,99,{tv_a[0]},{wa[0]},{ga[0]},"
+                             f"0,0,0,0,0,0,0,0,0,0,0,0,"
+                             f"{salary},{commission},9,9,9,")
             else:
-                sc = None
-            if sc:
-                scenario = random.randint(1, 3)
-                pcts = {}
-                for prod in ["tv", "watch", "game"]:
-                    lo, hi = sc[scenario][prod]
-                    pcts[prod] = random.uniform(lo, hi)
-            else:
-                pcts = {}
-                for prod in ["tv", "watch", "game"]:
-                    lo, hi = Q4_RANGES[prod]
-                    pcts[prod] = random.uniform(lo, hi)
-            tv_e = int(FORECAST["tv"]["east"] / n * pcts["tv"])
-            tv_c = int(FORECAST["tv"]["central"] / n * pcts["tv"])
-            tv_w = int(FORECAST["tv"]["west"] / n * pcts["tv"])
-            tv_total = tv_e + tv_c + tv_w
-            wa_e = int(FORECAST["watch"]["east"] / n * pcts["watch"])
-            wa_c = int(FORECAST["watch"]["central"] / n * pcts["watch"])
-            wa_w = int(FORECAST["watch"]["west"] / n * pcts["watch"])
-            watch_total = wa_e + wa_c + wa_w
-            ga_e = int(FORECAST["game"]["east"] / n * pcts["game"])
-            ga_c = int(FORECAST["game"]["central"] / n * pcts["game"])
-            ga_w = int(FORECAST["game"]["west"] / n * pcts["game"])
-            game_total = ga_e + ga_c + ga_w
-            type3_str = (f"{tv_e},{tv_c},{tv_w},{wa_e},{wa_c},{wa_w},"
-                         f"{ga_e},{ga_c},{ga_w},")
-        type3_fb = "1,1,1,1,1,1,1,1,1,"
-        self._submit_with_fallback(s, user, ck, period_num, 3, type3_str, type3_fb)
+                alloc_idx = random.choices([0, 1, 2], weights=[80, 15, 5])[0]
+                tv_a, wa, ga = Q2Q3_TIME_ALLOC[alloc_idx]
+                type5_str = (f"99,99,99,{tv_a[0]},{wa[0]},{ga[0]},"
+                             f"0,0,0,0,0,0,0,0,0,0,0,0,"
+                             f"{salary},{commission},9,9,9,")
+            type5_fb = "1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,"
+            ok, err = self._submit_with_fallback(s, user, ck, period_num, 5, type5_str, type5_fb)
+            if err == 2702:
+                has_2702 = True
 
-        # type1
-        t1 = tv_total + 480
-        w1 = watch_total + 480
-        g1 = game_total + 480
-        self._submit_with_fallback(s, user, ck, period_num, 1,
+            # type3
+            tv_total = watch_total = game_total = 0
+            if quarter == 1:
+                tv_east = 1500
+                game_east = 10000
+                watch_east = max(0, int((45000 - 45000 - tv_east * COST_TV
+                                        - game_east * COST_GAME) / COST_WATCH))
+                tv_total = tv_east
+                watch_total = watch_east
+                game_total = game_east
+                type3_str = f"{tv_east},0,0,{watch_east},0,0,{game_east},0,0,"
+            else:
+                if quarter == 2:
+                    sc = Q2_SCENARIOS
+                elif quarter == 3:
+                    sc = Q3_SCENARIOS
+                else:
+                    sc = None
+                if sc:
+                    scenario = random.randint(1, 3)
+                    pcts = {}
+                    for prod in ["tv", "watch", "game"]:
+                        lo, hi = sc[scenario][prod]
+                        pcts[prod] = random.uniform(lo, hi)
+                else:
+                    pcts = {}
+                    for prod in ["tv", "watch", "game"]:
+                        lo, hi = Q4_RANGES[prod]
+                        pcts[prod] = random.uniform(lo, hi)
+                tv_e = int(FORECAST["tv"]["east"] / n * pcts["tv"])
+                tv_c = int(FORECAST["tv"]["central"] / n * pcts["tv"])
+                tv_w = int(FORECAST["tv"]["west"] / n * pcts["tv"])
+                tv_total = tv_e + tv_c + tv_w
+                wa_e = int(FORECAST["watch"]["east"] / n * pcts["watch"])
+                wa_c = int(FORECAST["watch"]["central"] / n * pcts["watch"])
+                wa_w = int(FORECAST["watch"]["west"] / n * pcts["watch"])
+                watch_total = wa_e + wa_c + wa_w
+                ga_e = int(FORECAST["game"]["east"] / n * pcts["game"])
+                ga_c = int(FORECAST["game"]["central"] / n * pcts["game"])
+                ga_w = int(FORECAST["game"]["west"] / n * pcts["game"])
+                game_total = ga_e + ga_c + ga_w
+                type3_str = (f"{tv_e},{tv_c},{tv_w},{wa_e},{wa_c},{wa_w},"
+                             f"{ga_e},{ga_c},{ga_w},")
+            type3_fb = "1,1,1,1,1,1,1,1,1,"
+            ok, err = self._submit_with_fallback(s, user, ck, period_num, 3, type3_str, type3_fb)
+            if err == 2702:
+                has_2702 = True
+
+            # type1
+            t1 = tv_total + 480
+            w1 = watch_total + 480
+            g1 = game_total + 480
+            ok, err = self._submit_with_fallback(s, user, ck, period_num, 1,
                                    f"{t1},{w1},{g1},", "1,1,1,")
+            if err == 2702:
+                has_2702 = True
 
-        # type6
-        if quarter == 1:
-            type6_str = "0,0,0,0,0,0,0,0,0,10,11,12,13,13,15,12,14,5,5,2,2,"
-        elif quarter == 2:
-            tp = random.randint(1, 250) * 10000
-            twp = random.randint(200, 450) * 10000
-            tgp = random.randint(450, 850) * 10000
-            type6_str = (f"{tp},{tp},{tp},{twp},{twp},{twp},"
-                         f"{tgp},{tgp},{tgp},10,11,12,13,13,15,12,14,5,5,2,2,")
-        elif quarter == 3:
-            tp = random.randint(1, 45) * 10000
-            twp = random.randint(450, 950) * 10000
-            tgp = random.randint(750, 1150) * 10000
-            type6_str = (f"{tp},{tp},{tp},{twp},{twp},{twp},"
-                         f"{tgp},{tgp},{tgp},10,11,12,13,13,15,12,14,5,5,2,2,")
-        else:
-            tp = random.randint(1, 150) * 10000
-            twp = random.randint(750, 1250) * 10000
-            tgp = random.randint(850, 1150) * 10000
-            type6_str = (f"{tp},{tp},{tp},{twp},{twp},{twp},"
-                         f"{tgp},{tgp},{tgp},10,11,12,13,13,15,12,14,5,5,2,2,")
-        type6_fb = "1,1,1,1,1,1,1,1,1,10,11,12,13,13,15,12,14,5,5,2,2,"
-        self._submit_with_fallback(s, user, ck, period_num, 6, type6_str, type6_fb)
+            # type6
+            if quarter == 1:
+                type6_str = "0,0,0,0,0,0,0,0,0,10,11,12,13,13,15,12,14,5,5,2,2,"
+            elif quarter == 2:
+                tp = random.randint(1, 250) * 10000
+                twp = random.randint(200, 450) * 10000
+                tgp = random.randint(450, 850) * 10000
+                type6_str = (f"{tp},{tp},{tp},{twp},{twp},{twp},"
+                             f"{tgp},{tgp},{tgp},10,11,12,13,13,15,12,14,5,5,2,2,")
+            elif quarter == 3:
+                tp = random.randint(1, 45) * 10000
+                twp = random.randint(450, 950) * 10000
+                tgp = random.randint(750, 1150) * 10000
+                type6_str = (f"{tp},{tp},{tp},{twp},{twp},{twp},"
+                             f"{tgp},{tgp},{tgp},10,11,12,13,13,15,12,14,5,5,2,2,")
+            else:
+                tp = random.randint(1, 150) * 10000
+                twp = random.randint(750, 1250) * 10000
+                tgp = random.randint(850, 1150) * 10000
+                type6_str = (f"{tp},{tp},{tp},{twp},{twp},{twp},"
+                             f"{tgp},{tgp},{tgp},10,11,12,13,13,15,12,14,5,5,2,2,")
+            type6_fb = "1,1,1,1,1,1,1,1,1,10,11,12,13,13,15,12,14,5,5,2,2,"
+            ok, err = self._submit_with_fallback(s, user, ck, period_num, 6, type6_str, type6_fb)
+            if err == 2702:
+                has_2702 = True
 
-        # type2
-        if quarter == 1:
-            prods = random.sample(["tv", "watch", "game"], 2)
-            rd_vals = {"tv": random.randint(80, 150) * 10000,
-                       "watch": random.randint(80, 150) * 10000,
-                       "game": random.randint(80, 150) * 10000}
-            rdt = rd_vals.get("tv", 0) if "tv" in prods else 0
-            rdw = rd_vals.get("watch", 0) if "watch" in prods else 0
-            rdg = rd_vals.get("game", 0) if "game" in prods else 0
-        elif quarter == 2:
-            rdt = random.randint(800, 1800) * 10000
-            rdw = random.randint(1200, 3200) * 10000
-            rdg = random.randint(2500, 4200) * 10000
-        elif quarter == 3:
-            rdt = random.randint(1200, 2000) * 10000
-            rdw = random.randint(1200, 2000) * 10000
-            rdg = random.randint(3000, 4200) * 10000
-        else:
-            rdt = random.randint(2700, 3800) * 10000
-            rdw = random.randint(2700, 4500) * 10000
-            rdg = random.randint(3500, 6000) * 10000
-        type2_str = f"{rdt},{rdw},{rdg},100,100,100,"
-        self._submit_with_fallback(s, user, ck, period_num, 2, type2_str,
+            # type2
+            if quarter == 1:
+                prods = random.sample(["tv", "watch", "game"], 2)
+                rd_vals = {"tv": random.randint(80, 150) * 10000,
+                           "watch": random.randint(80, 150) * 10000,
+                           "game": random.randint(80, 150) * 10000}
+                rdt = rd_vals.get("tv", 0) if "tv" in prods else 0
+                rdw = rd_vals.get("watch", 0) if "watch" in prods else 0
+                rdg = rd_vals.get("game", 0) if "game" in prods else 0
+            elif quarter == 2:
+                rdt = random.randint(800, 1800) * 10000
+                rdw = random.randint(1200, 3200) * 10000
+                rdg = random.randint(2500, 4200) * 10000
+            elif quarter == 3:
+                rdt = random.randint(1200, 2000) * 10000
+                rdw = random.randint(1200, 2000) * 10000
+                rdg = random.randint(3000, 4200) * 10000
+            else:
+                rdt = random.randint(2700, 3800) * 10000
+                rdw = random.randint(2700, 4500) * 10000
+                rdg = random.randint(3500, 6000) * 10000
+            type2_str = f"{rdt},{rdw},{rdg},100,100,100,"
+            ok, err = self._submit_with_fallback(s, user, ck, period_num, 2, type2_str,
                                    "1,1,1,1,1,1,")
+            if err == 2702:
+                has_2702 = True
 
-        # type7
-        self._submit_with_fallback(s, user, ck, period_num, 7,
+            # type7
+            ok, err = self._submit_with_fallback(s, user, ck, period_num, 7,
                                    "9999,7999,9999,9999,7999,9999,9999,7999,9999,",
                                    "1,1,1,1,1,1,1,1,1,")
+            if err == 2702:
+                has_2702 = True
 
-        # type8
-        self._submit_with_fallback(s, user, ck, period_num, 8,
+            # type8
+            ok, err = self._submit_with_fallback(s, user, ck, period_num, 8,
                                    "1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,",
                                    "1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,", state=2)
+            if err == 2702:
+                has_2702 = True
+
+            if has_2702:
+                print(f"    [9001] got 2702, re-login and retry... ({retry+1}/3)")
+                time.sleep(5)
+                s2, user2, ck2 = self.login_9001(uid, room_id)
+                if s2 is not None:
+                    s, user, ck = s2, user2, ck2
+                continue
+            return True
         return True
 
 
@@ -627,15 +654,25 @@ def flip_loop(sched, dc, room_id, room_level):
     if sched.is_room_finished(room_id, room_level):
         print("  [flip] room already finished", flush=True)
         return True
+
+    # 等待9001刷新期号后再取当前期
+    time.sleep(5)
     current_period = dc.get_period(uid, room_id)
     print(f"  [flip] current period: {current_period}", flush=True)
-    for attempt in range(3):
+
+    # 提交当前期决策（循环重试直到成功）
+    for attempt in range(20):
+        if sched._time_left() < 600:
+            print("  [flip] time limit, exit", flush=True)
+            return False
         try:
             dc.submit_all_decisions(uid, room_id, current_period)
+            print(f"  [flip] period {current_period} decisions OK")
             break
         except Exception as e:
-            print(f"  [flip] submit error: {e}", flush=True)
+            print(f"  [flip] submit error: {e}, retry in 10s... ({attempt+1}/20)")
             time.sleep(10)
+
     no_flip_count = 0
     while current_period < TOTAL_PERIOD:
         if sched._time_left() < 600:
@@ -646,16 +683,37 @@ def flip_loop(sched, dc, room_id, room_level):
             return True
         resp = sched.next_period(room_id, room_level)
         if resp == "1":
-            current_period += 1
             no_flip_count = 0
-            print(f"  [flip] flipped! period {current_period}", flush=True)
-            for attempt in range(3):
+            print(f"  [flip] flipped! waiting 9001 refresh...", flush=True)
+            # 翻期后等待9001刷新期号
+            target_period = current_period + 1
+            for wait in range(40):
+                if sched._time_left() < 600:
+                    return False
+                time.sleep(5)
+                actual = dc.get_period(uid, room_id)
+                print(f"  [flip] wait period: expected={target_period} actual={actual} ({wait+1}/40)")
+                if actual >= target_period:
+                    current_period = actual
+                    print(f"  [flip] period refreshed to {current_period}", flush=True)
+                    break
+            else:
+                # 40次等待都没刷新，用目标期号
+                current_period = target_period
+                print(f"  [flip] timeout, use target period {current_period}", flush=True)
+
+            # 提交新期决策（循环重试直到成功）
+            for attempt in range(20):
+                if sched._time_left() < 600:
+                    return False
                 try:
                     dc.submit_all_decisions(uid, room_id, current_period)
+                    print(f"  [flip] period {current_period} decisions OK")
                     break
                 except Exception as e:
-                    print(f"  [flip] submit error: {e}", flush=True)
+                    print(f"  [flip] submit error: {e}, retry in 10s... ({attempt+1}/20)")
                     time.sleep(10)
+
             if sched.is_room_finished(room_id, room_level):
                 print("  [flip] room finished after flip", flush=True)
                 return True
@@ -726,8 +784,8 @@ def handle_room(sched, dc, room_id, room_level):
 
 
 def main():
-    username = os.environ.get("BOT_USER", "自动房间-1")
-    password = os.environ.get("BOT_PASS", "321")
+    username = os.environ.get("BOT_USER", "自动-1")
+    password = os.environ.get("BOT_PASS", "123321")
 
     print(f"{'='*50}")
     print(f"paopao3 scheduler {now_bj().strftime('%Y-%m-%d %H:%M:%S')}")
