@@ -672,7 +672,7 @@ def flip_loop(sched, dc, room_id, room_level):
     uid = sched.user_id
     if sched.is_room_finished(room_id, room_level):
         print("  [flip] room already finished", flush=True)
-        return True
+        return True, {}
 
     # 等待9001刷新期号后再取当前期
     time.sleep(5)
@@ -691,7 +691,7 @@ def flip_loop(sched, dc, room_id, room_level):
         for attempt in range(20):
             if sched._time_left() < 600:
                 print("  [flip] time limit, exit", flush=True)
-                return False
+                return False, state
             try:
                 dc.submit_all_decisions(uid, room_id, current_period)
                 print(f"  [flip] period {current_period} decisions OK")
@@ -709,10 +709,10 @@ def flip_loop(sched, dc, room_id, room_level):
     while current_period < TOTAL_PERIOD:
         if sched._time_left() < 600:
             print("  [flip] time limit, exit", flush=True)
-            return False
+            return False, state
         if sched.is_room_finished(room_id, room_level):
             print("  [flip] room finished", flush=True)
-            return True
+            return True, state
         resp = sched.next_period(room_id, room_level)
         if resp == "1":
             no_flip_count = 0
@@ -720,7 +720,7 @@ def flip_loop(sched, dc, room_id, room_level):
             target_period = current_period + 1
             for wait in range(40):
                 if sched._time_left() < 600:
-                    return False
+                    return False, state
                 time.sleep(5)
                 actual = dc.get_period(uid, room_id)
                 print(f"  [flip] wait period: expected={target_period} actual={actual} ({wait+1}/40)")
@@ -745,7 +745,7 @@ def flip_loop(sched, dc, room_id, room_level):
             else:
                 for attempt in range(20):
                     if sched._time_left() < 600:
-                        return False
+                        return False, state
                     try:
                         dc.submit_all_decisions(uid, room_id, current_period)
                         print(f"  [flip] period {current_period} decisions OK")
@@ -760,7 +760,7 @@ def flip_loop(sched, dc, room_id, room_level):
 
             if sched.is_room_finished(room_id, room_level):
                 print("  [flip] room finished after flip", flush=True)
-                return True
+                return True, state
         elif resp == "0":
             no_flip_count += 1
             print(f"  [flip] not ready yet, wait 10s... ({no_flip_count})", flush=True)
@@ -769,11 +769,11 @@ def flip_loop(sched, dc, room_id, room_level):
                 print("  [finish] long time no flip, try finish...", flush=True)
                 for _ in range(20):
                     if sched._time_left() < 600:
-                        return False
+                        return False, state
                     resp2 = sched.finish_exp(room_id, room_level)
                     if resp2 == "1" or sched.is_room_finished(room_id, room_level):
                         print("  [finish] room finished!", flush=True)
-                        return True
+                        return True, state
                     time.sleep(30)
                 no_flip_count = 0
         else:
@@ -784,25 +784,25 @@ def flip_loop(sched, dc, room_id, room_level):
                 print("  [finish] long time no flip, try finish...", flush=True)
                 for _ in range(20):
                     if sched._time_left() < 600:
-                        return False
+                        return False, state
                     resp2 = sched.finish_exp(room_id, room_level)
                     if resp2 == "1" or sched.is_room_finished(room_id, room_level):
                         print("  [finish] room finished!", flush=True)
-                        return True
+                        return True, state
                     time.sleep(30)
                 no_flip_count = 0
     print("  [finish] Q4 done, end room...", flush=True)
     while True:
         if sched._time_left() < 600:
             print("  [finish] time limit, exit", flush=True)
-            return False
+            return False, state
         resp = sched.finish_exp(room_id, room_level)
         if resp == "1":
             print("  [finish] done!", flush=True)
-            return True
+            return True, state
         if sched.is_room_finished(room_id, room_level):
             print("  [finish] room finished!", flush=True)
-            return True
+            return True, state
         time.sleep(30)
 
 
@@ -834,11 +834,11 @@ def handle_room(sched, dc, room_id, room_level):
         save_state(state)
 
     new_dc = DecisionClient()
-    flip_loop(sched, new_dc, room_id, room_level)
-    state["phase"] = "finished"
-    state["finished_at"] = now_bj().strftime("%Y-%m-%d %H:%M:%S")
-    save_state(state)
-    return True
+    ok, updated_state = flip_loop(sched, new_dc, room_id, room_level)
+    updated_state["phase"] = "finished"
+    updated_state["finished_at"] = now_bj().strftime("%Y-%m-%d %H:%M:%S")
+    save_state(updated_state)
+    return ok
 
 
 def main():
@@ -899,9 +899,10 @@ def main():
                 ok, room_id = sched.create_room(room_level, sched._now())
                 if ok:
                     print(f"  [create] success! room={room_id}", flush=True)
-                    save_state({"room_id": room_id, "room_level": room_level, "phase": "created"})
+                    state = new_state(room_id, room_level)
+                    state["phase"] = "created"
+                    save_state(state)
                     handle_room(sched, dc, room_id, room_level)
-                    save_state({"room_id": room_id, "room_level": room_level, "phase": "finished"})
                 else:
                     print("  [create] failed", flush=True)
                     time.sleep(30)
@@ -943,9 +944,10 @@ def main():
             time.sleep(30)
             continue
         print(f"  [create] success! room={room_id}", flush=True)
-        save_state({"room_id": room_id, "room_level": room_level, "phase": "created"})
+        state = new_state(room_id, room_level)
+        state["phase"] = "created"
+        save_state(state)
         handle_room(sched, dc, room_id, room_level)
-        save_state({"room_id": room_id, "room_level": room_level, "phase": "finished"})
 
 
 if __name__ == "__main__":
