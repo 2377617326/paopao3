@@ -87,14 +87,33 @@ def now_bj():
 
 def load_state():
     if os.path.exists(STATE_FILE):
-        with open(STATE_FILE, "r") as f:
-            return json.load(f)
+        try:
+            with open(STATE_FILE, "r") as f:
+                return json.load(f)
+        except Exception:
+            return {}
     return {}
 
 
 def save_state(state):
+    state["updated_at"] = now_bj().strftime("%Y-%m-%d %H:%M:%S")
     with open(STATE_FILE, "w") as f:
-        json.dump(state, f)
+        json.dump(state, f, indent=2, ensure_ascii=False)
+
+
+def new_state(room_id, room_level):
+    """创建新房间的初始状态"""
+    return {
+        "room_id": room_id,
+        "room_level": room_level,
+        "phase": "waiting_players",  # waiting_players / started / flipping / finished
+        "current_period": 0,
+        "decisions": {},  # {period: "submitted"}
+        "created_at": now_bj().strftime("%Y-%m-%d %H:%M:%S"),
+        "started_at": None,
+        "last_flip_at": None,
+        "last_decision_at": None,
+    }
 
 
 class Scheduler:
@@ -660,18 +679,31 @@ def flip_loop(sched, dc, room_id, room_level):
     current_period = dc.get_period(uid, room_id)
     print(f"  [flip] current period: {current_period}", flush=True)
 
-    # 提交当前期决策（循环重试直到成功）
-    for attempt in range(20):
-        if sched._time_left() < 600:
-            print("  [flip] time limit, exit", flush=True)
-            return False
-        try:
-            dc.submit_all_decisions(uid, room_id, current_period)
-            print(f"  [flip] period {current_period} decisions OK")
-            break
-        except Exception as e:
-            print(f"  [flip] submit error: {e}, retry in 10s... ({attempt+1}/20)")
-            time.sleep(10)
+    # 检查当前期是否已提交过决策（重启恢复场景）
+    state = load_state()
+    decisions_done = state.get("decisions", {})
+
+    # 提交当前期决策（如果还没提交过）
+    period_key = str(current_period)
+    if decisions_done.get(period_key):
+        print(f"  [flip] period {current_period} decisions already submitted (from state)", flush=True)
+    else:
+        for attempt in range(20):
+            if sched._time_left() < 600:
+                print("  [flip] time limit, exit", flush=True)
+                return False
+            try:
+                dc.submit_all_decisions(uid, room_id, current_period)
+                print(f"  [flip] period {current_period} decisions OK")
+                decisions_done[period_key] = "submitted"
+                state["decisions"] = decisions_done
+                state["current_period"] = current_period
+                state["last_decision_at"] = now_bj().strftime("%Y-%m-%d %H:%M:%S")
+                save_state(state)
+                break
+            except Exception as e:
+                print(f"  [flip] submit error: {e}, retry in 10s... ({attempt+1}/20)")
+                time.sleep(10)
 
     no_flip_count = 0
     while current_period < TOTAL_PERIOD:
@@ -685,7 +717,6 @@ def flip_loop(sched, dc, room_id, room_level):
         if resp == "1":
             no_flip_count = 0
             print(f"  [flip] flipped! waiting 9001 refresh...", flush=True)
-            # 翻期后等待9001刷新期号
             target_period = current_period + 1
             for wait in range(40):
                 if sched._time_left() < 600:
@@ -698,21 +729,34 @@ def flip_loop(sched, dc, room_id, room_level):
                     print(f"  [flip] period refreshed to {current_period}", flush=True)
                     break
             else:
-                # 40次等待都没刷新，用目标期号
                 current_period = target_period
                 print(f"  [flip] timeout, use target period {current_period}", flush=True)
 
-            # 提交新期决策（循环重试直到成功）
-            for attempt in range(20):
-                if sched._time_left() < 600:
-                    return False
-                try:
-                    dc.submit_all_decisions(uid, room_id, current_period)
-                    print(f"  [flip] period {current_period} decisions OK")
-                    break
-                except Exception as e:
-                    print(f"  [flip] submit error: {e}, retry in 10s... ({attempt+1}/20)")
-                    time.sleep(10)
+            # 保存翻期状态
+            state["current_period"] = current_period
+            state["phase"] = "flipping"
+            state["last_flip_at"] = now_bj().strftime("%Y-%m-%d %H:%M:%S")
+            save_state(state)
+
+            # 提交新期决策（如果还没提交过）
+            period_key = str(current_period)
+            if decisions_done.get(period_key):
+                print(f"  [flip] period {current_period} decisions already submitted (from state)", flush=True)
+            else:
+                for attempt in range(20):
+                    if sched._time_left() < 600:
+                        return False
+                    try:
+                        dc.submit_all_decisions(uid, room_id, current_period)
+                        print(f"  [flip] period {current_period} decisions OK")
+                        decisions_done[period_key] = "submitted"
+                        state["decisions"] = decisions_done
+                        state["last_decision_at"] = now_bj().strftime("%Y-%m-%d %H:%M:%S")
+                        save_state(state)
+                        break
+                    except Exception as e:
+                        print(f"  [flip] submit error: {e}, retry in 10s... ({attempt+1}/20)")
+                        time.sleep(10)
 
             if sched.is_room_finished(room_id, room_level):
                 print("  [flip] room finished after flip", flush=True)
@@ -770,16 +814,30 @@ def handle_room(sched, dc, room_id, room_level):
         print("  [handle] room not accessible", flush=True)
         return True
 
+    state = load_state()
+    if not state or state.get("room_id") != room_id:
+        state = new_state(room_id, room_level)
+
     if sched.is_room_started(room_id, room_level):
         print("  [handle] room already started, flip loop", flush=True)
+        state["phase"] = "started"
+        if not state.get("started_at"):
+            state["started_at"] = now_bj().strftime("%Y-%m-%d %H:%M:%S")
+        save_state(state)
     else:
         created_at = sched._now()
         started = sched.wait_and_start(room_id, room_level, created_at)
         if not started:
             return False
+        state["phase"] = "started"
+        state["started_at"] = now_bj().strftime("%Y-%m-%d %H:%M:%S")
+        save_state(state)
 
     new_dc = DecisionClient()
     flip_loop(sched, new_dc, room_id, room_level)
+    state["phase"] = "finished"
+    state["finished_at"] = now_bj().strftime("%Y-%m-%d %H:%M:%S")
+    save_state(state)
     return True
 
 
@@ -799,7 +857,21 @@ def main():
         return
 
     sched.start_ts = time.time()
+
+    # 加载状态，恢复上次进度
+    state = load_state()
     skip_rooms = set()
+    if state:
+        print(f"[restore] loaded state: room={state.get('room_id')} period={state.get('current_period')} phase={state.get('phase')}", flush=True)
+        rid = state.get("room_id")
+        lv = state.get("room_level")
+        if rid and lv and not sched.is_room_finished(rid, lv):
+            print(f"[restore] resuming room {rid} level {lv}", flush=True)
+            handle_room(sched, dc, rid, lv)
+            skip_rooms.add(rid)
+        else:
+            print("[restore] saved room finished or not found, starting fresh", flush=True)
+            state = {}
 
     while True:
         if sched._time_left() < 600:
@@ -827,7 +899,9 @@ def main():
                 ok, room_id = sched.create_room(room_level, sched._now())
                 if ok:
                     print(f"  [create] success! room={room_id}", flush=True)
+                    save_state({"room_id": room_id, "room_level": room_level, "phase": "created"})
                     handle_room(sched, dc, room_id, room_level)
+                    save_state({"room_id": room_id, "room_level": room_level, "phase": "finished"})
                 else:
                     print("  [create] failed", flush=True)
                     time.sleep(30)
@@ -869,7 +943,9 @@ def main():
             time.sleep(30)
             continue
         print(f"  [create] success! room={room_id}", flush=True)
+        save_state({"room_id": room_id, "room_level": room_level, "phase": "created"})
         handle_room(sched, dc, room_id, room_level)
+        save_state({"room_id": room_id, "room_level": room_level, "phase": "finished"})
 
 
 if __name__ == "__main__":
