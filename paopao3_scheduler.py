@@ -645,7 +645,7 @@ class DecisionClient:
 
             # type7
             ok, err = self._submit_with_fallback(s, user, ck, period_num, 7,
-                                   "9999,7999,9999,9999,7999,9999,9999,7999,9999,",
+                                   "9999,9999,9999,7999,7999,7999,9999,9999,9999,",
                                    "1,1,1,1,1,1,1,1,1,")
             if err == 2702:
                 has_2702 = True
