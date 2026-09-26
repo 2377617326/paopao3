@@ -894,18 +894,8 @@ def main():
                         has_handleable = True
                         break
             if not has_handleable:
-                print("  no handleable rooms, create new", flush=True)
-                room_level = 1
-                ok, room_id = sched.create_room(room_level, sched._now())
-                if ok:
-                    print(f"  [create] success! room={room_id}", flush=True)
-                    state = new_state(room_id, room_level)
-                    state["phase"] = "created"
-                    save_state(state)
-                    handle_room(sched, dc, room_id, room_level)
-                else:
-                    print("  [create] failed", flush=True)
-                    time.sleep(30)
+                print("  no handleable rooms, no-create after hours, wait 60s", flush=True)
+                time.sleep(60)
             continue
 
         primary, secondary = plan
