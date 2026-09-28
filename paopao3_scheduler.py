@@ -479,17 +479,74 @@ class DecisionClient:
             pass
         return 1
 
+    def _err_code(self, r):
+        e = r.get("ErrorNumber")
+        if e:
+            return e
+        d = r.get("Data")
+        if isinstance(d, dict):
+            return d.get("ErrorNumber", 0)
+        return 0
+
+    def apply_loan(self, s, user, period_num):
+        """资金不足(1006/3001)时申请贷款: 本季度还款, 利率4%. 返回是否成功"""
+        try:
+            base = {"companyId": user.get("companyId"), "userId": user.get("userId"),
+                    "classId": user.get("classId"), "periodNum": period_num,
+                    "expId": user.get("expId")}
+            xsrf = s.cookies.get("XSRF-TOKEN")
+            if xsrf:
+                s.headers["X-XSRF-TOKEN"] = xsrf
+            r = s.post(f"{BASE_9001}/student/companyInfo/bankLoan",
+                       params=base, timeout=self.timeout)
+            j = r.json()
+            if j.get("Status") != 2000:
+                print(f"    [贷款] 查询失败: {r.text[:150]}")
+                return False
+            info = j.get("Data") or {}
+            if info.get("drNoFinish") == 0:
+                print("    [贷款] drNoFinish=0, 本季不可贷款")
+                return False
+            max_loan = info.get("maxLoanMoney")
+            if not max_loan or float(max_loan) <= 0:
+                print("    [贷款] 可贷额度为0")
+                return False
+            if info.get("loanLi"):
+                print("    [贷款] 已有贷款记录, 跳过")
+                return False
+            lp = dict(base)
+            lp.update({"loanMoney": max_loan, "selPeriodNum": 0,
+                       "maxLoan": max_loan, "className": user.get("className")})
+            r2 = s.post(f"{BASE_9001}/student/companyInfo/saveLoan",
+                        params=lp, timeout=self.timeout)
+            j2 = r2.json()
+            if j2.get("Status") == 2000:
+                print(f"    [贷款] 成功! 金额={max_loan} (本季度还款, 利率4%)")
+                return True
+            print(f"    [贷款] 申请失败: {r2.text[:200]}")
+            return False
+        except Exception as e:
+            print(f"    [贷款] 异常: {e}")
+            return False
+
     def _submit_with_fallback(self, s, user, ck, period_num, typ, decision_str,
-                               fallback_str, state=0):
+                           fallback_str, state=0):
         r = self.submit_decision(s, user, ck, period_num, typ, decision_str, state=state)
         ok = r.get("Status") == 2000
-        err = r.get("ErrorNumber", 0)
+        err = self._err_code(r)
         if not ok:
             if err == 2702:
                 return ok, 2702
-            print(f"    type{typ}: FAIL, retry all-1s...")
-            r = self.submit_decision(s, user, ck, period_num, typ, fallback_str, state=state)
-            ok = r.get("Status") == 2000
+            if err in (1006, 3001) and not getattr(self, "_loaned_round", False):
+                if self.apply_loan(s, user, period_num):
+                    self._loaned_round = True
+                    r = self.submit_decision(s, user, ck, period_num, typ,
+                                              decision_str, state=state)
+                    ok = r.get("Status") == 2000
+            if not ok:
+                print(f"    type{typ}: FAIL, retry all-1s...")
+                r = self.submit_decision(s, user, ck, period_num, typ, fallback_str, state=state)
+                ok = r.get("Status") == 2000
         print(f"    type{typ}: {'OK' if ok else 'FAIL'}")
         return ok, 0
 
@@ -498,6 +555,8 @@ class DecisionClient:
         if s is None:
             print(f"    [9001] login failed")
             return False
+
+        self._loaned_round = False
 
         for retry in range(3):
             n = 8
