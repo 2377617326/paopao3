@@ -537,9 +537,9 @@ class DecisionClient:
         if not ok:
             if err == 2702:
                 return ok, 2702
-            if err in (1006, 3001) and not getattr(self, "_loaned_round", False):
+            if err in (1006, 3001) and not getattr(self, "_loan_tried_round", False):
+                self._loan_tried_round = True
                 if self.apply_loan(s, user, period_num):
-                    self._loaned_round = True
                     r = self.submit_decision(s, user, ck, period_num, typ,
                                               decision_str, state=state)
                     ok = r.get("Status") == 2000
@@ -556,7 +556,7 @@ class DecisionClient:
             print(f"    [9001] login failed")
             return False
 
-        self._loaned_round = False
+        self._loan_tried_round = False
 
         for retry in range(3):
             n = 8
