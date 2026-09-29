@@ -936,7 +936,7 @@ def main():
 
     if not sched.login():
         print("Login failed")
-        return
+        sys.exit(75)
 
     sched.start_ts = time.time()
 
@@ -976,8 +976,13 @@ def main():
                         has_handleable = True
                         break
             if not has_handleable:
-                print("  no handleable rooms, no-create after hours, wait 60s", flush=True)
-                time.sleep(60)
+                unfinished = [rid for lv, rid in own.items() if not sched.is_room_finished(rid, lv)]
+                if unfinished:
+                    print(f"  unfinished rooms {unfinished}, wait 60s", flush=True)
+                    time.sleep(60)
+                    continue
+                print("  all rooms finished, off hours, shutdown (exit 78)", flush=True)
+                sys.exit(78)
             continue
 
         primary, secondary = plan
