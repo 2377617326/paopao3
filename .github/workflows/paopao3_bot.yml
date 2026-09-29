@@ -35,8 +35,8 @@ jobs:
       - name: Run scheduler
         id: run-scheduler
         env:
-          BOT_USER: ${{ secrets.BOT_USER }}
-          BOT_PASS: ${{ secrets.BOT_PASS }}
+          BOT_USER: "自动-1"
+          BOT_PASS: "123321"
         run: |
           set +e
           python paopao3_scheduler.py 
