@@ -365,10 +365,16 @@ class Scheduler:
         if wait_sec > 0:
             print(f"  [wait] room {room_id} [{room_name}] start {target_time.strftime('%H:%M')}, wait {wait_sec/60:.0f}min", flush=True)
             while self._now() < target_time:
+                if self._time_left() < 600:
+                    print("  [wait] time limit, hand off to next job", flush=True)
+                    return False
                 time.sleep(min(30, max(1, wait_sec)))
                 wait_sec = (target_time - self._now()).total_seconds()
         print(f"  [start] time! starting...", flush=True)
         while True:
+            if self._time_left() < 600:
+                print("  [start] time limit, hand off to next job", flush=True)
+                return False
             self.start_exp(room_id, room_level)
             time.sleep(5)
             if self.is_room_started(room_id, room_level):
@@ -378,8 +384,8 @@ class Scheduler:
             if players is None:
                 print("  [start] room gone", flush=True)
                 return False
-            print(f"  [start] not started({players}/{maxp}), retry in 10s...", flush=True)
-            time.sleep(10)
+            print(f"  [start] not started({players}/{maxp}), retry in 5s...", flush=True)
+            time.sleep(5)
 
     def pick_level(self, primary, secondary):
         try:
@@ -766,6 +772,8 @@ def flip_loop(sched, dc, room_id, room_level):
                 time.sleep(10)
 
     no_flip_count = 0
+    wait_started = time.time()
+    period_anchor = None
     while current_period < TOTAL_PERIOD:
         if sched._time_left() < 600:
             print("  [flip] time limit, exit", flush=True)
@@ -773,21 +781,36 @@ def flip_loop(sched, dc, room_id, room_level):
         if sched.is_room_finished(room_id, room_level):
             print("  [flip] room finished", flush=True)
             return True, state
+        # 锚点=上次翻期时刻+20min, 提前12s开始高频轮询, 保证准点翻期
+        if period_anchor is not None:
+            while True:
+                remain = period_anchor + PERIOD_LENGTH * 60 - time.time()
+                if remain <= 12:
+                    break
+                if sched._time_left() < 600:
+                    print("  [flip] time limit, exit", flush=True)
+                    return False, state
+                if sched.is_room_finished(room_id, room_level):
+                    print("  [flip] room finished", flush=True)
+                    return True, state
+                time.sleep(min(10, max(1, remain - 11)))
         resp = sched.next_period(room_id, room_level)
         if resp == "1":
             no_flip_count = 0
+            period_anchor = time.time()
+            wait_started = time.time()
             print(f"  [flip] flipped! waiting 9001 refresh...", flush=True)
             target_period = current_period + 1
             for wait in range(40):
                 if sched._time_left() < 600:
                     return False, state
-                time.sleep(5)
                 actual = dc.get_period(uid, room_id)
                 print(f"  [flip] wait period: expected={target_period} actual={actual} ({wait+1}/40)")
                 if actual >= target_period:
                     current_period = actual
                     print(f"  [flip] period refreshed to {current_period}", flush=True)
                     break
+                time.sleep(2)
             else:
                 current_period = target_period
                 print(f"  [flip] timeout, use target period {current_period}", flush=True)
@@ -821,41 +844,41 @@ def flip_loop(sched, dc, room_id, room_level):
             if sched.is_room_finished(room_id, room_level):
                 print("  [flip] room finished after flip", flush=True)
                 return True, state
-        elif resp == "0":
-            no_flip_count += 1
-            print(f"  [flip] not ready yet, wait 10s... ({no_flip_count})", flush=True)
-            time.sleep(10)
-            if no_flip_count >= 120:
-                print("  [finish] long time no flip, try finish...", flush=True)
-                for _ in range(20):
-                    if sched._time_left() < 600:
-                        return False, state
-                    resp2 = sched.finish_exp(room_id, room_level)
-                    if resp2 == "1" or sched.is_room_finished(room_id, room_level):
-                        print("  [finish] room finished!", flush=True)
-                        return True, state
-                    time.sleep(30)
-                no_flip_count = 0
         else:
             no_flip_count += 1
-            print(f"  [flip] resp={resp}, retry 10s...", flush=True)
-            time.sleep(10)
-            if no_flip_count >= 120:
+            if no_flip_count == 1 or no_flip_count % 30 == 0:
+                print(f"  [flip] resp={resp}, retrying... ({no_flip_count})", flush=True)
+            # 仅超过本期20min+60s后才尝试结束房间, 绝不在期内提前结束
+            if time.time() - wait_started >= PERIOD_LENGTH * 60 + 60 and no_flip_count >= 3:
                 print("  [finish] long time no flip, try finish...", flush=True)
-                for _ in range(20):
+                for _ in range(10):
                     if sched._time_left() < 600:
                         return False, state
                     resp2 = sched.finish_exp(room_id, room_level)
                     if resp2 == "1" or sched.is_room_finished(room_id, room_level):
                         print("  [finish] room finished!", flush=True)
                         return True, state
-                    time.sleep(30)
+                    time.sleep(3)
+                wait_started = time.time()
                 no_flip_count = 0
-    print("  [finish] Q4 done, end room...", flush=True)
+            time.sleep(2 if period_anchor is not None else 5)
+    print("  [finish] Q4 done, waiting period end...", flush=True)
+    finish_started = False
     while True:
         if sched._time_left() < 600:
             print("  [finish] time limit, exit", flush=True)
             return False, state
+        if sched.is_room_finished(room_id, room_level):
+            print("  [finish] room finished!", flush=True)
+            return True, state
+        if period_anchor is not None:
+            remain = period_anchor + PERIOD_LENGTH * 60 - 12 - time.time()
+            if remain > 0:
+                time.sleep(min(10, max(1, remain)))
+                continue
+        if not finish_started:
+            print("  [finish] due, fast finish attempts...", flush=True)
+            finish_started = True
         resp = sched.finish_exp(room_id, room_level)
         if resp == "1":
             print("  [finish] done!", flush=True)
@@ -863,8 +886,7 @@ def flip_loop(sched, dc, room_id, room_level):
         if sched.is_room_finished(room_id, room_level):
             print("  [finish] room finished!", flush=True)
             return True, state
-        time.sleep(30)
-
+        time.sleep(2 if period_anchor is not None else 5)
 
 def handle_room(sched, dc, room_id, room_level):
     level = LEVELS[room_level]
@@ -983,12 +1005,17 @@ def main():
         ok, room_id = sched.create_room(room_level, created_at)
         if not ok:
             own = sched.find_own_rooms()
+            handled = False
             if own:
                 for lv, rid in own.items():
                     if rid not in skip_rooms and not sched.is_room_finished(rid, lv):
                         handle_room(sched, dc, rid, lv)
                         skip_rooms.add(rid)
+                        handled = True
                         break
+                if not handled:
+                    print("  [create] failed, own rooms all done, wait 20s", flush=True)
+                    time.sleep(20)
                 continue
             print("  [create] failed, wait 30s", flush=True)
             time.sleep(30)
