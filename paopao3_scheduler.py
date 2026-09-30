@@ -422,6 +422,14 @@ class Scheduler:
         return None
 
 
+ZERO_DECISIONS = {
+    4: "0,0,0,0,0,0,0,0,0,0,0,0,",
+    3: "0,0,0,0,0,0,0,0,0,",
+    6: "0,0,0,0,0,0,0,0,0,10,11,12,13,13,15,12,14,5,5,2,2,",
+    2: "0,0,0,0,0,0,",
+}
+
+
 class DecisionClient:
     def __init__(self, timeout=15):
         self.timeout = timeout
@@ -537,7 +545,7 @@ class DecisionClient:
             return False
 
     def _submit_with_fallback(self, s, user, ck, period_num, typ, decision_str,
-                           fallback_str, state=0):
+                           fallback_str, state=0, zero_str=None):
         r = self.submit_decision(s, user, ck, period_num, typ, decision_str, state=state)
         ok = r.get("Status") == 2000
         err = self._err_code(r)
@@ -550,18 +558,28 @@ class DecisionClient:
                     r = self.submit_decision(s, user, ck, period_num, typ,
                                               decision_str, state=state)
                     ok = r.get("Status") == 2000
+                    err = self._err_code(r)
             if not ok:
-                print(f"    type{typ}: FAIL, retry all-1s...")
+                print(f"    type{typ}: FAIL(err={err}), retry all-1s...")
                 r = self.submit_decision(s, user, ck, period_num, typ, fallback_str, state=state)
                 ok = r.get("Status") == 2000
-        print(f"    type{typ}: {'OK' if ok else 'FAIL'}")
-        return ok, 0
+                err = self._err_code(r)
+            if not ok and zero_str:
+                print(f"    type{typ}: all-1s failed(err={err}), try zero-spend...")
+                r = self.submit_decision(s, user, ck, period_num, typ, zero_str, state=state)
+                ok = r.get("Status") == 2000
+                err = self._err_code(r)
+        if ok:
+            print(f"    type{typ}: OK")
+        else:
+            print(f"    type{typ}: FAIL err={err} resp={str(r)[:160]}")
+        return ok, (0 if ok else err)
 
     def submit_all_decisions(self, uid, room_id, period_num):
         s, user, ck = self.login_9001(uid, room_id)
         if s is None:
             print(f"    [9001] login failed")
-            return False
+            return -1
 
         self._loan_tried_round = False
 
@@ -569,11 +587,14 @@ class DecisionClient:
             n = 8
             quarter = period_num
             has_2702 = False
+            succeeded = 0
 
             # type4
             ok, err = self._submit_with_fallback(s, user, ck, period_num, 4,
                                    "9,9,9,1,9,9,9,1,9,9,9,1,",
-                                   "1,1,1,1,1,1,1,1,1,1,1,1,")
+                                   "1,1,1,1,1,1,1,1,1,1,1,1,", zero_str=ZERO_DECISIONS[4])
+            if ok:
+                succeeded += 1
             if err == 2702:
                 has_2702 = True
 
@@ -596,6 +617,8 @@ class DecisionClient:
                              f"{salary},{commission},9,9,9,")
             type5_fb = "1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,"
             ok, err = self._submit_with_fallback(s, user, ck, period_num, 5, type5_str, type5_fb)
+            if ok:
+                succeeded += 1
             if err == 2702:
                 has_2702 = True
 
@@ -643,7 +666,9 @@ class DecisionClient:
                 type3_str = (f"{tv_e},{tv_c},{tv_w},{wa_e},{wa_c},{wa_w},"
                              f"{ga_e},{ga_c},{ga_w},")
             type3_fb = "1,1,1,1,1,1,1,1,1,"
-            ok, err = self._submit_with_fallback(s, user, ck, period_num, 3, type3_str, type3_fb)
+            ok, err = self._submit_with_fallback(s, user, ck, period_num, 3, type3_str, type3_fb, zero_str=ZERO_DECISIONS[3])
+            if ok:
+                succeeded += 1
             if err == 2702:
                 has_2702 = True
 
@@ -653,6 +678,8 @@ class DecisionClient:
             g1 = game_total + 480
             ok, err = self._submit_with_fallback(s, user, ck, period_num, 1,
                                    f"{t1},{w1},{g1},", "1,1,1,")
+            if ok:
+                succeeded += 1
             if err == 2702:
                 has_2702 = True
 
@@ -678,7 +705,9 @@ class DecisionClient:
                 type6_str = (f"{tp},{tp},{tp},{twp},{twp},{twp},"
                              f"{tgp},{tgp},{tgp},10,11,12,13,13,15,12,14,5,5,2,2,")
             type6_fb = "1,1,1,1,1,1,1,1,1,10,11,12,13,13,15,12,14,5,5,2,2,"
-            ok, err = self._submit_with_fallback(s, user, ck, period_num, 6, type6_str, type6_fb)
+            ok, err = self._submit_with_fallback(s, user, ck, period_num, 6, type6_str, type6_fb, zero_str=ZERO_DECISIONS[6])
+            if ok:
+                succeeded += 1
             if err == 2702:
                 has_2702 = True
 
@@ -705,7 +734,9 @@ class DecisionClient:
                 rdg = random.randint(3500, 6000) * 10000
             type2_str = f"{rdt},{rdw},{rdg},100,100,100,"
             ok, err = self._submit_with_fallback(s, user, ck, period_num, 2, type2_str,
-                                   "1,1,1,1,1,1,")
+                                   "1,1,1,1,1,1,", zero_str=ZERO_DECISIONS[2])
+            if ok:
+                succeeded += 1
             if err == 2702:
                 has_2702 = True
 
@@ -713,6 +744,8 @@ class DecisionClient:
             ok, err = self._submit_with_fallback(s, user, ck, period_num, 7,
                                    "9999,9999,9999,7999,7999,7999,9999,9999,9999,",
                                    "1,1,1,1,1,1,1,1,1,")
+            if ok:
+                succeeded += 1
             if err == 2702:
                 has_2702 = True
 
@@ -720,6 +753,8 @@ class DecisionClient:
             ok, err = self._submit_with_fallback(s, user, ck, period_num, 8,
                                    "1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,",
                                    "1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,", state=2)
+            if ok:
+                succeeded += 1
             if err == 2702:
                 has_2702 = True
 
@@ -730,8 +765,8 @@ class DecisionClient:
                 if s2 is not None:
                     s, user, ck = s2, user2, ck2
                 continue
-            return True
-        return True
+            return succeeded
+        return succeeded
 
 
 def flip_loop(sched, dc, room_id, room_level):
@@ -759,9 +794,17 @@ def flip_loop(sched, dc, room_id, room_level):
                 print("  [flip] time limit, exit", flush=True)
                 return False, state
             try:
-                dc.submit_all_decisions(uid, room_id, current_period)
-                print(f"  [flip] period {current_period} decisions OK")
-                decisions_done[period_key] = "submitted"
+                okn = dc.submit_all_decisions(uid, room_id, current_period)
+                if isinstance(okn, int) and okn < 0:
+                    print(f"  [flip] 9001 login failed, retry in 10s... ({attempt+1}/20)")
+                    time.sleep(10)
+                    continue
+                if okn == 8:
+                    print(f"  [flip] period {current_period} decisions OK (8/8)")
+                    decisions_done[period_key] = "submitted"
+                else:
+                    print(f"  [flip] [WARN] period {current_period} decisions {okn}/8, partial")
+                    decisions_done[period_key] = "partial"
                 state["decisions"] = decisions_done
                 state["current_period"] = current_period
                 state["last_decision_at"] = now_bj().strftime("%Y-%m-%d %H:%M:%S")
@@ -830,9 +873,17 @@ def flip_loop(sched, dc, room_id, room_level):
                     if sched._time_left() < 600:
                         return False, state
                     try:
-                        dc.submit_all_decisions(uid, room_id, current_period)
-                        print(f"  [flip] period {current_period} decisions OK")
-                        decisions_done[period_key] = "submitted"
+                        okn = dc.submit_all_decisions(uid, room_id, current_period)
+                        if isinstance(okn, int) and okn < 0:
+                            print(f"  [flip] 9001 login failed, retry in 10s... ({attempt+1}/20)")
+                            time.sleep(10)
+                            continue
+                        if okn == 8:
+                            print(f"  [flip] period {current_period} decisions OK (8/8)")
+                            decisions_done[period_key] = "submitted"
+                        else:
+                            print(f"  [flip] [WARN] period {current_period} decisions {okn}/8, partial")
+                            decisions_done[period_key] = "partial"
                         state["decisions"] = decisions_done
                         state["last_decision_at"] = now_bj().strftime("%Y-%m-%d %H:%M:%S")
                         save_state(state)
